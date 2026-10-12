@@ -19,17 +19,19 @@
 # ---------------------------------------------------------------------------
 $ToolkitUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/UGC-Toolkit.ps1'
 $ToolkitName    = 'Ihsan Tech Fix'
-$ToolkitVersion = '2.2'
+$ToolkitVersion = '2.3'
 $LogDir  = Join-Path $env:ProgramData 'IhsanTechFix'
 
 # Office printers for the one-click install cards. Add one line per printer.
 #   Driver = the exact driver name inside the .inf file
-#   Source = a folder (or .zip) with the extracted driver, on the NAS or a web link
+#   Source = where to get the driver: a folder or .zip on the NAS, and/or a web
+#            link to a .zip. The first one that works is used (NAS first = fast).
 $PrinterCatalog = @(
     @{ Name   = 'Canon-Office'
        IP     = '10.10.10.189'
-       Driver = 'Canon Generic Plus UFR II'
-       Source = '\\10.10.10.209\UGC Public\IHSAN\Softwares\Drivers\Canon-Generic-Plus-UFRII' }
+       Driver = 'Canon Generic Plus UFR II'     # from CNLB0MA64.INF, v3.20 (02/2025), 64-bit
+       Source = @('\\10.10.10.209\UGC Public\IHSAN\Softwares\Drivers\Canon-Generic-Plus-UFRII',
+                  'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/drivers/Canon-Generic-Plus-UFRII-v3.20-x64.zip') }
 )
 $LogFile = Join-Path $LogDir 'toolkit.log'
 
@@ -103,7 +105,7 @@ function Start-AsLoggedOnUser([string]$Program, [string]$Arguments = '') {
     Unregister-ScheduledTask -TaskName $task -Confirm:$false
 }
 
-function Install-NetworkPrinter([string]$Name, [string]$IP, [string]$Driver, [string]$Source) {
+function Install-NetworkPrinter([string]$Name, [string]$IP, [string]$Driver, [string[]]$Source) {
     "Printer : $Name"
     "Address : $IP"
     if (-not (Test-Connection $IP -Count 2 -Quiet)) { "WARNING: $IP does not answer ping. Continuing anyway." }
@@ -112,13 +114,22 @@ function Install-NetworkPrinter([string]$Name, [string]$IP, [string]$Driver, [st
     if (Get-PrinterDriver -Name $Driver -ErrorAction SilentlyContinue) {
         "Driver  : '$Driver' already installed"
     } else {
-        $work = $Source
-        if ($Source -match '^https?://') {
-            $zip = Join-Path $env:TEMP "IhsanTechFix_driver.zip"
-            "Downloading driver..."
-            Invoke-WebRequest -Uri $Source -OutFile $zip -UseBasicParsing
-            $work = $zip
+        $work = $null
+        foreach ($src in $Source) {
+            if ($src -match '^https?://') {
+                try {
+                    $zip = Join-Path $env:TEMP "IhsanTechFix_driver.zip"
+                    "Driver  : downloading from $src"
+                    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                    Invoke-WebRequest -Uri $src -OutFile $zip -UseBasicParsing
+                    $work = $zip; break
+                } catch { "Driver  : download failed ($($_.Exception.Message))" }
+            } elseif (Test-Path $src) {
+                "Driver  : using $src"
+                $work = $src; break
+            } else { "Driver  : not reachable: $src" }
         }
+        if (-not $work) { throw 'The driver could not be found in any source.' }
         if ($work -like '*.zip') {
             $dest = Join-Path $env:TEMP ("IhsanTechFix_drv_" + [guid]::NewGuid().ToString('N'))
             Expand-Archive -Path $work -DestinationPath $dest -Force
@@ -530,7 +541,8 @@ $Fixes = @(
 
 # One "Install" card for every printer in $PrinterCatalog
 foreach ($pr in $PrinterCatalog) {
-    $code = "Install-NetworkPrinter -Name '{0}' -IP '{1}' -Driver '{2}' -Source '{3}'" -f $pr.Name, $pr.IP, $pr.Driver, $pr.Source
+    $sources = (@($pr.Source) | ForEach-Object { "'" + ($_ -replace "'", "''") + "'" }) -join ','
+    $code = "Install-NetworkPrinter -Name '{0}' -IP '{1}' -Driver '{2}' -Source @({3})" -f $pr.Name, $pr.IP, $pr.Driver, $sources
     $Fixes += @{ Tab='Printers'; Name="Install $($pr.Name)"; Mode='Inline'; Icon=0xE749
                  Help="One-click install of $($pr.Name) at $($pr.IP): adds the $($pr.Driver) driver, the network port and the printer."
                  Script=[scriptblock]::Create($code) }
