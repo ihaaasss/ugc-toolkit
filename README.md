@@ -22,6 +22,6 @@ A fix that needs details from you can add an `Inputs=@( @{ Key='Name'; Label='Fu
 
 ## Email signature
 
-**Outlook & Office > Create email signature** asks for name, designation, mobile (and optionally email), then installs the UGC signature with the banner from `assets/UGC-signature-banner.jpg` into the signed-in user's Outlook and makes it the default for new mails and replies. Classic Outlook only.
+**Outlook & Office > Create email signature** asks for the company (Ultraction or Powerful Plus), name, designation, mobile (and optionally email), then installs that company's signature with its banner from `assets/` (`UGC-signature-banner.jpg` / `PPC-signature-banner.jpg`) into the signed-in user's Outlook and makes it the default for new mails and replies. Classic Outlook only.
 
 **Outlook & Office > Delete email signature** lists the signed-in user's Outlook signatures as a tick-list. Ticked ones are removed (moved to `C:\ProgramData\IhsanTechFix\Backups\Signatures_<user>_<date>`), and if one was the default for new mails or replies, that default is cleared.

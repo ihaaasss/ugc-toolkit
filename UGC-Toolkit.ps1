@@ -19,7 +19,7 @@
 # ---------------------------------------------------------------------------
 $ToolkitUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/UGC-Toolkit.ps1'
 $ToolkitName    = 'Ihsan Tech Fix'
-$ToolkitVersion = '3.2'
+$ToolkitVersion = '3.3'
 $LogDir  = Join-Path $env:ProgramData 'IhsanTechFix'
 
 # Software for the one-click install cards (winget package IDs).
@@ -476,22 +476,37 @@ $Fixes = @(
     # These act on the person signed in to Windows, even when the toolkit was
     # opened with a different admin account (see Get-LoggedOnUser in the prelude).
     @{ Tab='Outlook & Office'; Name='Create email signature'; Mode='Inline'; InputButton='Create'
-       Help='Asks for name, designation and mobile, then installs the UGC signature with the company banner and sets it as default in Outlook.'
+       Help='Pick Ultraction or Powerful Plus, enter name, designation and mobile; installs that company signature with its banner and sets it as default in Outlook.'
        # Inputs: shown in a form before the script runs; values arrive in $In.<Key>
        Inputs=@(
+           @{ Key='Company'; Label='Company'; Type='Choice'; Required=$true
+              Options=@('Ultraction General Contracting', 'Powerful Plus Contracting') }
            @{ Key='Name';  Label='Full name';    Required=$true; Hint='e.g. Ihsan Ullah' }
            @{ Key='Title'; Label='Designation';  Required=$true; Hint='e.g. IT Engineer' }
            @{ Key='Phone'; Label='Mobile number';Required=$true; Hint='e.g. 0509154372' }
-           @{ Key='Email'; Label='Email';        Hint='Leave blank for firstname@ultraction.ae' }
+           @{ Key='Email'; Label='Email';        Hint='Blank = firstname@company domain' }
        )
        Script={
            # ---- Company details: edit here if anything changes ----
-           $Company    = 'Ultraction General Contracting LLC.'
-           $AddressHtm = 'Office 02, 1<sup>st</sup> Floor, 9 Ar Raha 6 St, Mussaffa - M3, Abu Dhabi, U.A.E.'
-           $AddressTxt = 'Office 02, 1st Floor, 9 Ar Raha 6 St, Mussaffa - M3, Abu Dhabi, U.A.E.'
-           $MailDomain = 'ultraction.ae'
-           $BannerUrl  = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/assets/UGC-signature-banner.jpg'
-           $Brown = '#833C0B'; $Teal = '#339999'; $Tan = '#996633'
+           $Brands = @{
+               'Ultraction General Contracting' = @{
+                   Prefix = 'UGC'; Company = 'Ultraction General Contracting LLC.'; Domain = 'ultraction.ae'
+                   AddressHtm = 'Office 02, 1<sup>st</sup> Floor, 9 Ar Raha 6 St, Mussaffa - M3, Abu Dhabi, U.A.E.'
+                   AddressTxt = 'Office 02, 1st Floor, 9 Ar Raha 6 St, Mussaffa - M3, Abu Dhabi, U.A.E.'
+                   Banner = 'UGC-signature-banner.jpg'; Alt = 'Ultraction General Contracting - www.ultraction.ae'
+                   Main = '#833C0B'; Link = '#339999'; Sub = '#996633' }
+               'Powerful Plus Contracting' = @{
+                   Prefix = 'PPC'; Company = 'Powerful Plus Contracting L.L.C.'; Domain = 'powerful-plus.com'
+                   AddressHtm = 'P.O. Box 184318, Dubai, U.A.E.'
+                   AddressTxt = 'P.O. Box 184318, Dubai, U.A.E.'
+                   Banner = 'PPC-signature-banner.jpg'; Alt = 'Powerful Plus Contracting - www.powerful-plus.com'
+                   Main = '#252F6B'; Link = '#0038B8'; Sub = '#828486' }
+           }
+           $b = $Brands[$In.Company]
+           if (-not $b) { "Unknown company: $($In.Company)"; return }
+           $Company = $b.Company; $AddressHtm = $b.AddressHtm; $AddressTxt = $b.AddressTxt; $MailDomain = $b.Domain
+           $BannerUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/assets/' + $b.Banner
+           $Main = $b.Main; $Link = $b.Link; $Sub = $b.Sub
 
            $u = Get-LoggedOnUser
            if (-not $u) { 'No user is signed in to Windows.'; return }
@@ -506,12 +521,13 @@ $Fixes = @(
 
            # ---- Signature folder of the signed-in user ----
            $sigDir  = Get-SignatureDir $u
-           $sigName = ('UGC - ' + $name) -replace '[\\/:*?"<>|]', ''
+           $sigName = ("$($b.Prefix) - " + $name) -replace '[\\/:*?"<>|]', ''
            $filesDir = Join-Path $sigDir "$sigName`_files"
            New-Item $filesDir -ItemType Directory -Force | Out-Null
 
            # ---- Banner image: download, keep a cached copy for offline use ----
-           $cache = Join-Path $env:ProgramData 'IhsanTechFix\UGC-signature-banner.jpg'
+           $cache = Join-Path $env:ProgramData ('IhsanTechFix\' + $b.Banner)
+           New-Item (Split-Path $cache) -ItemType Directory -Force | Out-Null
            $img   = Join-Path $filesDir 'image001.jpg'
            try {
                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -529,13 +545,13 @@ $Fixes = @(
 <head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="Generator" content="Ihsan Tech Fix">
 <style>p.UgcSig{margin:0in;line-height:115%;$font;}</style></head>
 <body lang="EN-US"><div>
-<p class="UgcSig"><b><span style="font-size:12pt;$font;color:$Brown">$(& $h $name)</span></b></p>
-<p class="UgcSig"><b><span style="font-size:10pt;$font;color:$Brown">$(& $h $title)</span></b></p>
-<p class="UgcSig"><span style="font-size:10pt;$font;color:$Brown">Email: </span><a href="mailto:$(& $h $email)"><span style="font-size:10pt;$font;color:$Teal">$(& $h $email)</span></a></p>
-<p class="UgcSig"><span style="font-size:10pt;$font;color:$Brown">Mobile #: $(& $h $phone)</span></p>
-<p class="UgcSig"><b><span style="font-size:12pt;$font;color:$Brown">$(& $h $Company)</span></b></p>
-<p class="UgcSig"><span style="font-size:8pt;$font;color:$Tan">$AddressHtm</span></p>
-<p class="UgcSig"><img width="700" height="104" style="width:7.29in;height:1.08in" src="$imgSrc" alt="Ultraction General Contracting - www.ultraction.ae"></p>
+<p class="UgcSig"><b><span style="font-size:12pt;$font;color:$Main">$(& $h $name)</span></b></p>
+<p class="UgcSig"><b><span style="font-size:10pt;$font;color:$Main">$(& $h $title)</span></b></p>
+<p class="UgcSig"><span style="font-size:10pt;$font;color:$Main">Email: </span><a href="mailto:$(& $h $email)"><span style="font-size:10pt;$font;color:$Link">$(& $h $email)</span></a></p>
+<p class="UgcSig"><span style="font-size:10pt;$font;color:$Main">Mobile #: $(& $h $phone)</span></p>
+<p class="UgcSig"><b><span style="font-size:12pt;$font;color:$Main">$(& $h $Company)</span></b></p>
+<p class="UgcSig"><span style="font-size:8pt;$font;color:$Sub">$AddressHtm</span></p>
+<p class="UgcSig"><img width="700" height="104" style="width:7.29in;height:1.08in" src="$imgSrc" alt="$($b.Alt)"></p>
 </div></body></html>
 "@
            $text = "$name`r`n$title`r`nEmail: $email`r`nMobile #: $phone`r`n$Company`r`n$AddressTxt`r`n"
@@ -945,6 +961,19 @@ function Show-InputDialog($Fix) {
             $dlg.Controls.AddRange(@($lbl, $tb))
             $boxes[$f.Key] = $tb
             $y += $h + 32
+            continue
+        }
+        if ($f.Type -eq 'Choice') {
+            # Drop-down list; first option pre-selected
+            $tb = New-Object System.Windows.Forms.ComboBox
+            $tb.DropDownStyle = 'DropDownList'; $tb.FlatStyle = 'Flat'
+            $tb.SetBounds(20, $y + 21, 420, 26)
+            $tb.BackColor = $C.Card; $tb.ForeColor = $C.Text
+            foreach ($o in @($f.Options)) { [void]$tb.Items.Add($o) }
+            if ($tb.Items.Count) { $tb.SelectedIndex = 0 }
+            $dlg.Controls.AddRange(@($lbl, $tb))
+            $boxes[$f.Key] = $tb
+            $y += 58
             continue
         }
         $tb = New-Object System.Windows.Forms.TextBox
