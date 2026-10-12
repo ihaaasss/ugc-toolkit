@@ -29,3 +29,7 @@ A fix that needs details from you can add an `Inputs=@( @{ Key='Name'; Label='Fu
 ## Downloads tab
 
 Put files (usually `.zip`) in the repo's `downloads` folder. Each one shows up as a button on the **Downloads** page. One click saves it to the signed-in user's Downloads folder, extracts `.zip` files into a folder of the same name and opens it in Explorer. Files over 100 MB can't go on GitHub.
+
+## Pause Defender until restart (System Repair)
+
+For installs that get falsely blocked. Turns off the Defender settings Windows lets a script change — real-time protection, cloud-delivered protection, sample submission and controlled-folder access — and registers a one-time SYSTEM task that **restores the exact previous state at the next restart** and runs a quick scan. Tamper Protection and Smart App Control are never touched (Windows blocks scripts from changing those); if Tamper Protection is on, the card says so and does nothing. For permanently managing Defender across the fleet, use Intune/GPO instead.

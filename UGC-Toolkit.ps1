@@ -19,7 +19,7 @@
 # ---------------------------------------------------------------------------
 $ToolkitUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/UGC-Toolkit.ps1'
 $ToolkitName    = 'Ihsan Tech Fix'
-$ToolkitVersion = '3.6'
+$ToolkitVersion = '3.7'
 $LogDir  = Join-Path $env:ProgramData 'IhsanTechFix'
 
 # Software for the one-click install cards (winget package IDs).
@@ -398,6 +398,65 @@ $Fixes = @(
        Help='Forces a time sync. Wrong time breaks sign-in, Outlook and certificates.'
        Script={ Start-Service w32time -ErrorAction SilentlyContinue
                 w32tm.exe /resync /force | Out-String } }
+
+    @{ Tab='System Repair'; Name='Pause Defender until restart'; Mode='Inline'; Confirm=$true
+       Help='Turns off Defender real-time, cloud, sample submission and controlled-folder access, then automatically restores them at the next restart. For installs that get falsely blocked.'
+       Script={
+           # Several Defender settings cannot be changed by any script while Tamper
+           # Protection is on - Microsoft blocks it. Say so instead of pretending.
+           $st = Get-MpComputerStatus -ErrorAction SilentlyContinue
+           if ($st -and $st.IsTamperProtected) {
+               'Tamper Protection is ON, so Windows will not let a script change Defender.'
+               'Turn it off first:  Windows Security > Virus & threat protection > Manage settings > Tamper Protection = Off,'
+               'then run this card again. (Tamper Protection and Smart App Control can only be changed by hand or by Intune/GPO policy.)'
+               return
+           }
+
+           # 1. Remember the current state so the restart task restores it exactly
+           $p = Get-MpPreference
+           $rt   = [bool]$p.DisableRealtimeMonitoring
+           $maps = [int]$p.MAPSReporting
+           $samp = [int]$p.SubmitSamplesConsent
+           $cfa  = [int]$p.EnableControlledFolderAccess
+
+           # 2. Turn the scriptable protections off
+           Set-MpPreference -DisableRealtimeMonitoring $true       -ErrorAction SilentlyContinue
+           Set-MpPreference -MAPSReporting 0                       -ErrorAction SilentlyContinue   # cloud-delivered off
+           Set-MpPreference -SubmitSamplesConsent 2               -ErrorAction SilentlyContinue   # never submit samples
+           Set-MpPreference -EnableControlledFolderAccess Disabled -ErrorAction SilentlyContinue
+           Start-Sleep 1
+           $now = Get-MpPreference
+
+           # 3. Build a task that restores the captured state at next boot, then deletes itself.
+           #    Runs as SYSTEM so it works whoever logs in.
+           $taskName = 'IhsanTechFix_RestoreDefender'
+           $restore = @"
+Set-MpPreference -DisableRealtimeMonitoring `$$rt -ErrorAction SilentlyContinue
+Set-MpPreference -MAPSReporting $maps -ErrorAction SilentlyContinue
+Set-MpPreference -SubmitSamplesConsent $samp -ErrorAction SilentlyContinue
+Set-MpPreference -EnableControlledFolderAccess $cfa -ErrorAction SilentlyContinue
+Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-MpScan -ScanType QuickScan' -ErrorAction SilentlyContinue
+Unregister-ScheduledTask -TaskName '$taskName' -Confirm:`$false -ErrorAction SilentlyContinue
+"@
+           $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($restore))
+           $action    = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -EncodedCommand $enc"
+           $trigger   = New-ScheduledTaskTrigger -AtStartup
+           $principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -RunLevel Highest   # LocalSystem
+           Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+
+           # 4. Report what actually happened (not what we asked for)
+           $onoff = { param($b) if ($b) { 'OFF' } else { 'still ON' } }
+           "Real-time protection      : $(& $onoff $now.DisableRealtimeMonitoring)"
+           "Cloud-delivered protection: $(if ($now.MAPSReporting -eq 0) { 'OFF' } else { 'still ON' })"
+           "Sample submission         : $(if ($now.SubmitSamplesConsent -eq 2) { 'OFF' } else { 'still ON' })"
+           "Controlled folder access  : $(if ([int]$now.EnableControlledFolderAccess -eq 0) { 'OFF' } else { 'still ON' })"
+           if (-not $now.DisableRealtimeMonitoring) {
+               'Nothing changed - a policy (Intune/GPO) or Tamper Protection is enforcing Defender. It cannot be scripted off on this machine.'
+           } else {
+               'Protection is paused. It turns back ON automatically at the next restart (and a quick scan runs then).'
+               'Smart App Control and Tamper Protection are not touched - Windows does not allow scripts to change those.'
+           }
+       } }
 
     # ----- NETWORK -----
     @{ Tab='Network'; Name='IP configuration'; Mode='Inline'
@@ -870,6 +929,7 @@ $FixIcons = @{
     'Restart Explorer'                = 0xE72C
     'Group Policy update'             = 0xE713
     'Sync Windows time'               = 0xE823
+    'Pause Defender until restart'    = 0xE730
     'IP configuration'                = 0xE968
     'Internet & DNS test'             = 0xE774
     'Flush DNS + renew IP'            = 0xE72C
