@@ -25,3 +25,7 @@ A fix that needs details from you can add an `Inputs=@( @{ Key='Name'; Label='Fu
 **Outlook & Office > Create email signature** asks for the company (Ultraction or Powerful Plus), name, designation, mobile (and optionally email), then installs that company's signature with its banner from `assets/` (`UGC-signature-banner.jpg` / `PPC-signature-banner.jpg`) into the signed-in user's Outlook and makes it the default for new mails and replies. Classic Outlook only.
 
 **Outlook & Office > Delete email signature** lists the signed-in user's Outlook signatures as a tick-list. Ticked ones are removed (moved to `C:\ProgramData\IhsanTechFix\Backups\Signatures_<user>_<date>`), and if one was the default for new mails or replies, that default is cleared.
+
+## Downloads tab
+
+Put files (usually `.zip`) in the repo's `downloads` folder. Each one shows up as a button on the **Downloads** page. One click saves it to the signed-in user's Downloads folder, extracts `.zip` files into a folder of the same name and opens it in Explorer. Files over 100 MB can't go on GitHub.

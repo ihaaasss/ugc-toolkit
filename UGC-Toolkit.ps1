@@ -19,7 +19,7 @@
 # ---------------------------------------------------------------------------
 $ToolkitUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/UGC-Toolkit.ps1'
 $ToolkitName    = 'Ihsan Tech Fix'
-$ToolkitVersion = '3.4'
+$ToolkitVersion = '3.5'
 $LogDir  = Join-Path $env:ProgramData 'IhsanTechFix'
 
 # Software for the one-click install cards (winget package IDs).
@@ -40,6 +40,10 @@ $SoftwareCatalog = @(
 # "My Scripts" tab: every .bat / .cmd / .ps1 file in the repo's scripts folder
 # becomes a button automatically. Nothing in this file needs editing.
 $ScriptsApi = 'https://api.github.com/repos/ihaaasss/ugc-toolkit/contents/scripts'
+
+# "Downloads" tab: every file in the repo's downloads folder becomes a button that
+# downloads it to the signed-in user's Downloads folder (.zip files are also extracted).
+$DownloadsApi = 'https://api.github.com/repos/ihaaasss/ugc-toolkit/contents/downloads'
 
 # Startup PIN. Only the SHA-256 hash is stored here, not the PIN itself.
 # To change the PIN, run this and paste the result below:
@@ -846,6 +850,7 @@ $PageIcons = @{
     'Printers'          = 0xE749
     'Software'          = 0xE719
     'My Scripts'        = 0xE756
+    'Downloads'         = 0xE896
     'Info'              = 0xE946
 }
 $FixIcons = @{
@@ -1211,7 +1216,7 @@ $pageTitle.ForeColor = $C.Text
 
 $pages = @{}
 $navButtons = @()
-$tabNames = @($Fixes | ForEach-Object { $_.Tab } | Select-Object -Unique) + 'My Scripts'
+$tabNames = @($Fixes | ForEach-Object { $_.Tab } | Select-Object -Unique) + 'My Scripts' + 'Downloads'
 
 # Reads the scripts folder from GitHub and adds one card per script.
 # The first comment line of a script (REM ..., :: ... or # ...) becomes its description.
@@ -1256,8 +1261,57 @@ Write-Host "Exit code: `$LASTEXITCODE"
     }
 }
 
+function Import-RepoDownloads {
+    if ($script:RepoDownloadsLoaded) { return }
+    $script:RepoDownloadsLoaded = $true
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $items = Invoke-RestMethod -Uri $DownloadsApi -TimeoutSec 8 -Headers @{ 'User-Agent' = 'IhsanTechFix' }
+    } catch {
+        Add-Output "Could not read the downloads folder from GitHub: $($_.Exception.Message)" $C.Err
+        return
+    }
+    foreach ($it in ($items | Where-Object { $_.type -eq 'file' -and $_.name -notmatch '^(README\.md|\.gitkeep)$' } | Sort-Object name)) {
+        $nice = ([IO.Path]::GetFileNameWithoutExtension($it.name) -replace '[-_]', ' ')
+        $size = if ($it.size -ge 1MB) { '{0:N1} MB' -f ($it.size / 1MB) } else { '{0:N0} KB' -f ($it.size / 1KB) }
+        $isZip = $it.name -match '\.zip$'
+        $help = "$($it.name)  $Dot  $size  $Dot  " + $(if ($isZip) { 'downloads and extracts to the user''s Downloads folder' } else { 'downloads to the user''s Downloads folder' })
+        $fileQ = $it.name -replace "'", "''"
+        $urlQ  = $it.download_url -replace "'", "''"
+        $code = @"
+`$u = Get-LoggedOnUser
+`$dl = `$null
+if (`$u) { `$dl = (Get-ItemProperty "`$(`$u.Hive)\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders" -Name '{374DE290-123F-4565-9164-39C4925E467B}' -ErrorAction SilentlyContinue).'{374DE290-123F-4565-9164-39C4925E467B}' }
+if (-not `$dl -and `$u) { `$dl = Join-Path `$u.ProfilePath 'Downloads' }
+if (-not `$dl) { `$dl = Join-Path `$env:USERPROFILE 'Downloads' }
+New-Item `$dl -ItemType Directory -Force | Out-Null
+`$file = Join-Path `$dl '$fileQ'
+Write-Host "Downloading `$(Split-Path `$file -Leaf) ($size) to `$dl ..." -ForegroundColor Cyan
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+`$ProgressPreference = 'SilentlyContinue'   # the progress bar makes downloads many times slower
+Invoke-WebRequest -Uri '$urlQ' -OutFile `$file -UseBasicParsing
+Write-Host "Saved: `$file" -ForegroundColor Green
+`$open = `$dl
+if (`$file -like '*.zip') {
+    `$dest = Join-Path `$dl ([IO.Path]::GetFileNameWithoutExtension(`$file))
+    Write-Host "Extracting to `$dest ..." -ForegroundColor Cyan
+    Expand-Archive -Path `$file -DestinationPath `$dest -Force
+    Write-Host "Extracted: `$dest" -ForegroundColor Green
+    `$open = `$dest
+}
+Start-AsLoggedOnUser 'explorer.exe' "``"`$open``""
+"@
+        $script:Fixes += @{ Tab='Downloads'; Name=$nice; Mode='Window'; Icon=0xE896
+                            Help=$help; Script=[scriptblock]::Create($code) }
+    }
+    if (-not ($script:Fixes | Where-Object { $_.Tab -eq 'Downloads' })) {
+        Add-Output 'No downloads found. Add .zip (or other) files to the downloads folder in the GitHub repo.' $C.Muted
+    }
+}
+
 function Show-Page([string]$Name) {
     if ($Name -eq 'My Scripts') { Import-RepoScripts }
+    if ($Name -eq 'Downloads')  { Import-RepoDownloads }
     $flow = $pages[$Name]
     if ($flow.Controls.Count -eq 0) {
         # Cards are built the first time a page is opened, not at start-up
