@@ -1,6 +1,6 @@
-# UGC IT Quick-Fix Toolkit
+# Ihsan Tech Fix - Toolkit
 
-A point-and-click menu of common Windows fixes for UGC workstations: disk cleanup, system repair, network, Office/Teams, printers and system info.
+A point-and-click menu of common Windows fixes for Windows workstations: disk cleanup, system repair, network, Office/Teams, printers and system info.
 
 ## Run it
 
@@ -10,7 +10,7 @@ Open PowerShell and run:
 irm https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/UGC-Toolkit.ps1 | iex
 ```
 
-It elevates itself to Administrator. Buttons marked `*` ask for confirmation before deleting or resetting anything. Every action is logged to `C:\ProgramData\UGC-Toolkit\toolkit.log`.
+It elevates itself to Administrator. Orange cards ask for confirmation before deleting or resetting anything. Every action is logged to `C:\ProgramData\IhsanTechFix\toolkit.log`.
 
 Offline: copy `UGC-Toolkit.ps1` and `Run-Toolkit.cmd` to a USB stick or share and double-click `Run-Toolkit.cmd`.
 
