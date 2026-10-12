@@ -19,19 +19,17 @@
 # ---------------------------------------------------------------------------
 $ToolkitUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/UGC-Toolkit.ps1'
 $ToolkitName    = 'Ihsan Tech Fix'
-$ToolkitVersion = '2.3'
+$ToolkitVersion = '2.4'
 $LogDir  = Join-Path $env:ProgramData 'IhsanTechFix'
 
 # Office printers for the one-click install cards. Add one line per printer.
 #   Driver = the exact driver name inside the .inf file
-#   Source = where to get the driver: a folder or .zip on the NAS, and/or a web
-#            link to a .zip. The first one that works is used (NAS first = fast).
+#   Source = web link to a .zip with the driver (stored in this repo's drivers folder)
 $PrinterCatalog = @(
     @{ Name   = 'Canon-Office'
        IP     = '10.10.10.189'
        Driver = 'Canon Generic Plus UFR II'     # from CNLB0MA64.INF, v3.20 (02/2025), 64-bit
-       Source = @('\\10.10.10.209\UGC Public\IHSAN\Softwares\Drivers\Canon-Generic-Plus-UFRII',
-                  'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/drivers/Canon-Generic-Plus-UFRII-v3.20-x64.zip') }
+       Source = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/drivers/Canon-Generic-Plus-UFRII-v3.20-x64.zip' }
 )
 $LogFile = Join-Path $LogDir 'toolkit.log'
 
