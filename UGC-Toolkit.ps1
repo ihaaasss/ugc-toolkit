@@ -19,7 +19,7 @@
 # ---------------------------------------------------------------------------
 $ToolkitUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/UGC-Toolkit.ps1'
 $ToolkitName    = 'Ihsan Tech Fix'
-$ToolkitVersion = '3.8'
+$ToolkitVersion = '3.9'
 $LogDir  = Join-Path $env:ProgramData 'IhsanTechFix'
 
 # Software for the one-click install cards (winget package IDs).
@@ -214,6 +214,23 @@ function Install-App([string]$Name, [string]$Id, [string]$Scope = 'machine') {
     }
     if ($LASTEXITCODE -eq 0) { Write-Host "$Name installed." -ForegroundColor Green }
     else { Write-Host "winget finished with code $LASTEXITCODE. If it says 'already installed', nothing more is needed." -ForegroundColor Yellow }
+}
+
+function Get-NmapPath {
+    $cmd = Get-Command nmap.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    foreach ($c in "$env:ProgramFiles\Nmap\nmap.exe", "${env:ProgramFiles(x86)}\Nmap\nmap.exe") {
+        if (Test-Path $c) { return $c }
+    }
+    $null
+}
+
+# True only for a plain host name, IPv4/IPv6 or CIDR - stops option injection (e.g. "-oN file") into native tools
+function Test-SafeHost([string]$Value, [switch]$AllowCidr) {
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+    if ($Value -match '^[-/]') { return $false }
+    $pattern = if ($AllowCidr) { '^[A-Za-z0-9][A-Za-z0-9._:/-]*$' } else { '^[A-Za-z0-9][A-Za-z0-9._:-]*$' }
+    $Value -match $pattern
 }
 
 function Install-NetworkPrinter([string]$Name, [string]$IP, [string]$Driver, [string[]]$Source) {
@@ -496,6 +513,96 @@ $Fixes = @(
                'Microsoft 365 (443)'    = { (Test-NetConnection outlook.office365.com -Port 443 -WarningAction SilentlyContinue).TcpTestSucceeded }
            }
            foreach ($k in $tests.Keys) { '{0,-25} {1}' -f $k, $(if (& $tests[$k]) {'OK'} else {'FAILED'}) }
+       } }
+
+    @{ Tab='Network'; Name='Ping a host'; Mode='Inline'
+       Help='Sends 4 pings to a host or IP and shows replies and round-trip time.'
+       Inputs=@( @{ Key='Host'; Label='Host or IP'; Required=$true; Hint='e.g. 8.8.8.8 or ultraction.ae' } )
+       Script={
+           if (-not (Test-SafeHost $In.Host)) { "Invalid host: $($In.Host)"; return }
+           ping.exe -n 4 $In.Host | Out-String
+       } }
+
+    @{ Tab='Network'; Name='Trace route (tracert)'; Mode='Window'
+       Help='Shows every hop between this PC and a host - useful for finding where a connection slows down or stops.'
+       Inputs=@( @{ Key='Host'; Label='Host or IP'; Required=$true; Hint='e.g. ultraction.ae or 10.10.10.1' } )
+       Script={
+           if (-not (Test-SafeHost $In.Host)) { "Invalid host: $($In.Host)"; return }
+           Write-Host "Tracing route to $($In.Host) ..." -ForegroundColor Cyan
+           tracert.exe -d $In.Host
+       } }
+
+    @{ Tab='Network'; Name='Test a TCP port'; Mode='Inline'
+       Help='Checks whether a host is reachable on a specific port (e.g. 443 web, 3389 RDP, 445 file share).'
+       Inputs=@(
+           @{ Key='Host'; Label='Host or IP'; Required=$true; Hint='e.g. 10.10.10.209' }
+           @{ Key='Port'; Label='Port';       Required=$true; Hint='e.g. 445' }
+       )
+       Script={
+           if (-not (Test-SafeHost $In.Host)) { "Invalid host: $($In.Host)"; return }
+           if ($In.Port -notmatch '^\d{1,5}$' -or [int]$In.Port -lt 1 -or [int]$In.Port -gt 65535) { "Invalid port: $($In.Port)"; return }
+           $r = Test-NetConnection -ComputerName $In.Host -Port ([int]$In.Port) -WarningAction SilentlyContinue
+           "Host     : $($r.ComputerName)  ($($r.RemoteAddress))"
+           "Port $($In.Port) : $(if ($r.TcpTestSucceeded) { 'OPEN' } else { 'closed / filtered' })"
+           "Ping     : $(if ($r.PingSucceeded) { "$($r.PingReplyDetails.RoundtripTime) ms" } else { 'no reply' })"
+       } }
+
+    @{ Tab='Network'; Name='Listening ports on this PC'; Mode='Inline'
+       Help='Shows which ports this computer is listening on and the program behind each one.'
+       Script={
+           Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+             Sort-Object LocalPort -Unique |
+             Select-Object LocalAddress, LocalPort,
+               @{n='Process';e={ (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName }},
+               OwningProcess |
+             Format-Table -AutoSize | Out-String -Width 200
+       } }
+
+    @{ Tab='Network'; Name='Scan a host (nmap)'; Mode='Window'
+       Help='Port-scans one host or IP with nmap (installs nmap via winget if needed). Scan only machines you are responsible for.'
+       Inputs=@(
+           @{ Key='Target'; Label='Host or IP'; Required=$true; Hint='e.g. 10.10.10.209' }
+           @{ Key='Ports';  Label='Ports (optional)'; Hint='blank = top 1000, or e.g. 1-1024 or 80,443,445,3389' }
+       )
+       Script={
+           if (-not (Test-SafeHost $In.Target -AllowCidr)) { "Invalid target: $($In.Target)"; return }
+           $nmap = Get-NmapPath
+           if (-not $nmap) {
+               Write-Host 'nmap is not installed. Installing via winget...' -ForegroundColor Cyan
+               $w = Get-WingetPath
+               if (-not $w) { Write-Host 'winget not available - install Nmap manually from nmap.org.' -ForegroundColor Red; return }
+               & $w install --id Insecure.Nmap -e --silent --accept-package-agreements --accept-source-agreements
+               $nmap = Get-NmapPath
+           }
+           if (-not $nmap) { Write-Host 'nmap still not found after install. Install it manually from nmap.org.' -ForegroundColor Red; return }
+           $args = @('-T4', '-Pn')
+           if ($In.Ports) {
+               if ($In.Ports -notmatch '^[0-9,\-]+$') { Write-Host "Invalid ports: $($In.Ports)" -ForegroundColor Red; return }
+               $args += @('-p', $In.Ports)
+           }
+           $args += $In.Target
+           Write-Host "Running: nmap $($args -join ' ')" -ForegroundColor Cyan
+           & $nmap @args
+       } }
+
+    @{ Tab='Network'; Name='Discover devices on the LAN (nmap)'; Mode='Window'
+       Help='Ping-sweeps this PC''s local subnet with nmap and lists the devices that answer. Installs nmap if needed.'
+       Script={
+           $cfg = Get-NetIPConfiguration | Where-Object { $_.IPv4Address -and $_.IPv4DefaultGateway } | Select-Object -First 1
+           if (-not $cfg) { Write-Host 'No active network with a gateway found.' -ForegroundColor Red; return }
+           $ip = $cfg.IPv4Address.IPAddress
+           $subnet = ($ip -replace '\.\d+$', '.0') + '/24'
+           $nmap = Get-NmapPath
+           if (-not $nmap) {
+               Write-Host 'nmap is not installed. Installing via winget...' -ForegroundColor Cyan
+               $w = Get-WingetPath
+               if (-not $w) { Write-Host 'winget not available - install Nmap manually from nmap.org.' -ForegroundColor Red; return }
+               & $w install --id Insecure.Nmap -e --silent --accept-package-agreements --accept-source-agreements
+               $nmap = Get-NmapPath
+           }
+           if (-not $nmap) { Write-Host 'nmap still not found after install.' -ForegroundColor Red; return }
+           Write-Host "Sweeping $subnet (this PC is $ip) ..." -ForegroundColor Cyan
+           & $nmap -sn $subnet
        } }
 
     @{ Tab='Network'; Name='Flush DNS + renew IP'; Mode='Window'; Confirm=$true
@@ -958,6 +1065,12 @@ $FixIcons = @{
     'Flush DNS + renew IP'            = 0xE72C
     'Reset network stack'             = 0xE7BA
     'Saved Wi-Fi networks'            = 0xE701
+    'Ping a host'                     = 0xE968
+    'Trace route (tracert)'           = 0xE9D9
+    'Test a TCP port'                 = 0xEC27
+    'Listening ports on this PC'      = 0xE943
+    'Scan a host (nmap)'              = 0xE721
+    'Discover devices on the LAN (nmap)' = 0xE968
     'Clear Teams cache'               = 0xE716
     'Create email signature'          = 0xE70F
     'Delete email signature'          = 0xE74D

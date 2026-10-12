@@ -33,3 +33,7 @@ Put files (usually `.zip`) in the repo's `downloads` folder. Each one shows up a
 ## Turn Defender protection off / on (System Repair)
 
 For installs that get falsely blocked. **Turn off Defender protection** disables the settings Windows lets a script change — real-time protection, cloud-delivered protection, sample submission and controlled-folder access — and **leaves them off**. It first saves the previous state. **Turn on Defender protection** restores that exact saved state (or secure defaults) and runs a quick scan. Tamper Protection and Smart App Control are never touched (Windows blocks scripts from changing those); if Tamper Protection is on, the off card says so and does nothing. For permanently managing Defender across the fleet, use Intune/GPO instead.
+
+## Network diagnostics
+
+The Network tab includes **Ping a host**, **Trace route (tracert)**, **Test a TCP port**, **Listening ports on this PC**, **Scan a host (nmap)** and **Discover devices on the LAN (nmap)**. The nmap cards install nmap via winget (`Insecure.Nmap`) on first use. Host/IP inputs are validated so they can't inject extra command-line options. Only scan machines and networks you are responsible for.
