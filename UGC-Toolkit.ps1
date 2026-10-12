@@ -985,7 +985,7 @@ function Import-RepoScripts {
             if ($first) { $help = ($first -replace '^\s*(REM|::|#)\s*', '').Trim() }
         } catch { }
         $code = @"
-`$dir = Join-Path `$env:TEMP 'IhsanTechFix_scripts'
+`$dir = Join-Path `$env:ProgramData 'IhsanTechFix_scripts'
 New-Item `$dir -ItemType Directory -Force | Out-Null
 `$file = Join-Path `$dir '$($it.name)'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
