@@ -19,7 +19,7 @@
 # ---------------------------------------------------------------------------
 $ToolkitUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/UGC-Toolkit.ps1'
 $ToolkitName    = 'Ihsan Tech Fix'
-$ToolkitVersion = '3.5'
+$ToolkitVersion = '3.6'
 $LogDir  = Join-Path $env:ProgramData 'IhsanTechFix'
 
 # Software for the one-click install cards (winget package IDs).
@@ -1271,7 +1271,27 @@ function Import-RepoDownloads {
         Add-Output "Could not read the downloads folder from GitHub: $($_.Exception.Message)" $C.Err
         return
     }
-    foreach ($it in ($items | Where-Object { $_.type -eq 'file' -and $_.name -notmatch '^(README\.md|\.gitkeep)$' } | Sort-Object name)) {
+    # links.txt: one link card per line   Name | https://url | optional description
+    $linksFile = $items | Where-Object { $_.type -eq 'file' -and $_.name -eq 'links.txt' } | Select-Object -First 1
+    if ($linksFile) {
+        try {
+            $lines = (Invoke-WebRequest -Uri $linksFile.download_url -UseBasicParsing -TimeoutSec 8).Content -split "`r?`n"
+            foreach ($line in $lines) {
+                if ($line -match '^\s*(#|$)') { continue }
+                $parts = $line -split '\|' | ForEach-Object { $_.Trim() }
+                if ($parts.Count -lt 2 -or $parts[1] -notmatch '^https?://\S+$') {
+                    Add-Output "links.txt: skipped line (needs 'Name | https://...'): $line" $C.Muted; continue
+                }
+                $urlQ = $parts[1] -replace "'", "''"
+                $help = if ($parts.Count -ge 3 -and $parts[2]) { $parts[2] } else { $parts[1] }
+                $script:Fixes += @{ Tab='Downloads'; Name=$parts[0]; Mode='Inline'; Icon=0xE71B
+                                    Help=$help
+                                    Script=[scriptblock]::Create("Start-AsLoggedOnUser 'explorer.exe' '`"$urlQ`"'; 'Opened $urlQ in the default browser.'") }
+            }
+        } catch { Add-Output "Could not read links.txt: $($_.Exception.Message)" $C.Err }
+    }
+
+    foreach ($it in ($items | Where-Object { $_.type -eq 'file' -and $_.name -notmatch '^(README\.md|\.gitkeep|links\.txt)$' } | Sort-Object name)) {
         $nice = ([IO.Path]::GetFileNameWithoutExtension($it.name) -replace '[-_]', ' ')
         $size = if ($it.size -ge 1MB) { '{0:N1} MB' -f ($it.size / 1MB) } else { '{0:N0} KB' -f ($it.size / 1KB) }
         $isZip = $it.name -match '\.zip$'

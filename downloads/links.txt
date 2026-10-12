@@ -1,0 +1,4 @@
+# One button per line on the Downloads page:   Name | https://url | optional description
+# Lines starting with # are ignored. Replace the examples with your own links.
+Microsoft 365 Portal | https://www.office.com | Office web apps, Outlook on the web and OneDrive
+Ultraction Website | https://www.ultraction.ae | Company website
