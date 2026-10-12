@@ -19,7 +19,7 @@
 # ---------------------------------------------------------------------------
 $ToolkitUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/UGC-Toolkit.ps1'
 $ToolkitName    = 'Ihsan Tech Fix'
-$ToolkitVersion = '3.1'
+$ToolkitVersion = '3.2'
 $LogDir  = Join-Path $env:ProgramData 'IhsanTechFix'
 
 # Software for the one-click install cards (winget package IDs).
@@ -157,6 +157,15 @@ function Get-WingetPath {
              Sort-Object FullName -Descending | Select-Object -First 1
     if ($found) { return $found.FullName }
     $null
+}
+
+function Get-SignatureDir($u) {
+    # Outlook signature folder of a user (handles redirected AppData and localized folder names)
+    $appData = (Get-ItemProperty "$($u.Hive)\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders" -Name AppData -ErrorAction SilentlyContinue).AppData
+    if (-not $appData -or $appData -like '%*') { $appData = Join-Path $u.ProfilePath 'AppData\Roaming' }
+    $sigFolder = (Get-ItemProperty "$($u.Hive)\Software\Microsoft\Office\16.0\Common\General" -Name Signatures -ErrorAction SilentlyContinue).Signatures
+    if (-not $sigFolder) { $sigFolder = 'Signatures' }
+    Join-Path $appData "Microsoft\$sigFolder"
 }
 
 function Install-App([string]$Name, [string]$Id, [string]$Scope = 'machine') {
@@ -466,7 +475,7 @@ $Fixes = @(
     # ----- OUTLOOK & OFFICE -----
     # These act on the person signed in to Windows, even when the toolkit was
     # opened with a different admin account (see Get-LoggedOnUser in the prelude).
-    @{ Tab='Outlook & Office'; Name='Create email signature'; Mode='Inline'
+    @{ Tab='Outlook & Office'; Name='Create email signature'; Mode='Inline'; InputButton='Create'
        Help='Asks for name, designation and mobile, then installs the UGC signature with the company banner and sets it as default in Outlook.'
        # Inputs: shown in a form before the script runs; values arrive in $In.<Key>
        Inputs=@(
@@ -495,12 +504,8 @@ $Fixes = @(
            $email = "$($In.Email)".Trim().ToLower()
            if (-not $email) { $email = (($name -split ' ')[0].ToLower() -replace '[^a-z0-9.\-]', '') + "@$MailDomain" }
 
-           # ---- Signature folder of the signed-in user (handles redirected AppData) ----
-           $appData = (Get-ItemProperty "$($u.Hive)\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders" -Name AppData -ErrorAction SilentlyContinue).AppData
-           if (-not $appData -or $appData -like '%*') { $appData = Join-Path $u.ProfilePath 'AppData\Roaming' }
-           $sigFolder = (Get-ItemProperty "$($u.Hive)\Software\Microsoft\Office\16.0\Common\General" -Name Signatures -ErrorAction SilentlyContinue).Signatures
-           if (-not $sigFolder) { $sigFolder = 'Signatures' }
-           $sigDir  = Join-Path $appData "Microsoft\$sigFolder"
+           # ---- Signature folder of the signed-in user ----
+           $sigDir  = Get-SignatureDir $u
            $sigName = ('UGC - ' + $name) -replace '[\\/:*?"<>|]', ''
            $filesDir = Join-Path $sigDir "$sigName`_files"
            New-Item $filesDir -ItemType Directory -Force | Out-Null
@@ -555,6 +560,39 @@ $Fixes = @(
            'Set as default for new emails and replies.'
            if (Get-Process outlook -ErrorAction SilentlyContinue) { 'Outlook is open: close and reopen it to load the new signature.' }
            'Note: the "new Outlook" app does not use local signatures; this works in classic Outlook.'
+       } }
+
+    @{ Tab='Outlook & Office'; Name='Delete email signature'; Mode='Inline'; Confirm=$true; InputButton='Delete'
+       Help='Lists the Outlook signatures of the signed-in user so you can tick and remove them. A backup is kept.'
+       Inputs=@(
+           @{ Key='Remove'; Label='Signatures to delete'; Type='Pick'; Required=$true
+              Options={ $u = Get-LoggedOnUser; if (-not $u) { return }
+                        Get-ChildItem (Get-SignatureDir $u) -Filter *.htm -ErrorAction SilentlyContinue |
+                          ForEach-Object BaseName | Sort-Object } }
+       )
+       Script={
+           $u = Get-LoggedOnUser
+           if (-not $u) { 'No user is signed in to Windows.'; return }
+           $sigDir = Get-SignatureDir $u
+           $bk = Join-Path $env:ProgramData ("IhsanTechFix\Backups\Signatures_{0}_{1}" -f $u.Name.Split('\')[-1], (Get-Date -Format yyyyMMdd-HHmmss))
+           New-Item $bk -ItemType Directory -Force | Out-Null
+           $ms = "$($u.Hive)\Software\Microsoft\Office\16.0\Common\MailSettings"
+           $defaults = Get-ItemProperty $ms -ErrorAction SilentlyContinue
+
+           foreach ($name in ($In.Remove -split '\|')) {
+               if (-not $name) { continue }
+               $items = Get-ChildItem $sigDir -ErrorAction SilentlyContinue | Where-Object {
+                   $_.Name -in @("$name.htm", "$name.rtf", "$name.txt") -or ($_.PSIsContainer -and $_.Name.StartsWith($name + '_')) }
+               if (-not $items) { "Not found: $name"; continue }
+               # Moved to the backup folder, not destroyed
+               $items | Move-Item -Destination $bk -Force
+               "Deleted: $name"
+               foreach ($k in 'NewSignature', 'ReplySignature') {
+                   if ($defaults.$k -eq $name) { Remove-ItemProperty $ms -Name $k -ErrorAction SilentlyContinue; "  (was the default for $(if ($k -eq 'NewSignature') { 'new emails' } else { 'replies' }) - default cleared)" }
+               }
+           }
+           "Backup: $bk"
+           if (Get-Process outlook -ErrorAction SilentlyContinue) { 'Outlook is open: close and reopen it to see the change.' }
        } }
 
     @{ Tab='Outlook & Office'; Name='Rebuild Outlook profile'; Mode='Inline'; Confirm=$true
@@ -817,6 +855,7 @@ $FixIcons = @{
     'Saved Wi-Fi networks'            = 0xE701
     'Clear Teams cache'               = 0xE716
     'Create email signature'          = 0xE70F
+    'Delete email signature'          = 0xE74D
     'Rebuild Outlook profile'         = 0xE715
     'Restore previous Outlook profile'= 0xE7A7
     'Open Outlook in Safe Mode'       = 0xEA18
@@ -889,6 +928,25 @@ function Show-InputDialog($Fix) {
         $lbl = New-Object System.Windows.Forms.Label
         $lbl.Text = $f.Label + $(if ($f.Required) { ' *' } else { '' })
         $lbl.ForeColor = $C.Muted; $lbl.SetBounds(20, $y, 420, 20)
+        if ($f.Type -eq 'Pick') {
+            # Tick-list; Options is a scriptblock run now, so the list is always current
+            $opts = @(& $f.Options)
+            if (-not $opts) {
+                [System.Windows.Forms.MessageBox]::Show("Nothing found for '$($f.Label)'.", $ToolkitName) | Out-Null
+                $dlg.Dispose(); return $null
+            }
+            $tb = New-Object System.Windows.Forms.CheckedListBox
+            $tb.CheckOnClick = $true; $tb.IntegralHeight = $false
+            $h = [math]::Min(260, [math]::Max(80, $opts.Count * 22 + 8))
+            $tb.SetBounds(20, $y + 21, 420, $h)
+            $tb.BackColor = $C.Card; $tb.ForeColor = $C.Text; $tb.BorderStyle = 'FixedSingle'
+            foreach ($o in $opts) { [void]$tb.Items.Add($o) }
+            $lbl.Text += '   (tick one or more)'
+            $dlg.Controls.AddRange(@($lbl, $tb))
+            $boxes[$f.Key] = $tb
+            $y += $h + 32
+            continue
+        }
         $tb = New-Object System.Windows.Forms.TextBox
         $tb.SetBounds(20, $y + 21, 420, 26)
         $tb.BackColor = $C.Card; $tb.ForeColor = $C.Text; $tb.BorderStyle = 'FixedSingle'
@@ -898,9 +956,11 @@ function Show-InputDialog($Fix) {
         $boxes[$f.Key] = $tb
         $y += 58
     }
+    # Text of a field: typed text, or the ticked items joined with |
+    $read = { param($ctl) if ($ctl -is [System.Windows.Forms.CheckedListBox]) { @($ctl.CheckedItems) -join '|' } else { $ctl.Text.Trim() } }
 
     $ok = New-Object System.Windows.Forms.Button
-    $ok.Text = 'Create'; $ok.SetBounds(240, $y + 8, 96, 32)
+    $ok.Text = $(if ($Fix.InputButton) { $Fix.InputButton } else { 'OK' }); $ok.SetBounds(240, $y + 8, 96, 32)
     $ok.FlatStyle = 'Flat'; $ok.BackColor = $C.Accent; $ok.ForeColor = [System.Drawing.Color]::White
     $ok.FlatAppearance.BorderSize = 0
     $cancel = New-Object System.Windows.Forms.Button
@@ -913,7 +973,7 @@ function Show-InputDialog($Fix) {
 
     $ok.Add_Click({
         foreach ($f in $Fix.Inputs) {
-            if ($f.Required -and -not $boxes[$f.Key].Text.Trim()) {
+            if ($f.Required -and -not (& $read $boxes[$f.Key])) {
                 [System.Windows.Forms.MessageBox]::Show("Please fill in '$($f.Label)'.", $ToolkitName) | Out-Null
                 $boxes[$f.Key].Focus(); return
             }
@@ -925,27 +985,28 @@ function Show-InputDialog($Fix) {
     $result = $dlg.ShowDialog($form)
     if ($result -ne [System.Windows.Forms.DialogResult]::OK) { $dlg.Dispose(); return $null }
     $values = @{}
-    foreach ($k in $boxes.Keys) { $values[$k] = $boxes[$k].Text.Trim() }
+    foreach ($k in $boxes.Keys) { $values[$k] = & $read $boxes[$k] }
     $dlg.Dispose()
     return $values
 }
 
 function Invoke-Fix($Fix) {
-    if ($Fix.Confirm) {
-        $answer = [System.Windows.Forms.MessageBox]::Show(
-            "$($Fix.Help)`n`nRun '$($Fix.Name)' now?", $ToolkitName,
-            [System.Windows.Forms.MessageBoxButtons]::YesNo,
-            [System.Windows.Forms.MessageBoxIcon]::Question)
-        if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
-    }
-
     # Fixes with Inputs: ask first, then hand the answers to the script as $In
-    $inputLine = ''
+    $inputLine = ''; $chosen = ''
     if ($Fix.Inputs) {
         $values = Show-InputDialog $Fix
         if (-not $values) { return }
         $pairs = $values.GetEnumerator() | ForEach-Object { "'{0}'='{1}'" -f $_.Key, ($_.Value -replace "['\u2018\u2019\u201A\u201B]", "''") }
         $inputLine = '$In = @{' + ($pairs -join '; ') + "}`n"
+        $chosen = "`n`n" + (($values.Values | ForEach-Object { ($_ -split '\|') -join "`n" }) -join "`n")
+    }
+
+    if ($Fix.Confirm) {
+        $answer = [System.Windows.Forms.MessageBox]::Show(
+            "$($Fix.Help)$chosen`n`nRun '$($Fix.Name)' now?", $ToolkitName,
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question)
+        if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
     }
 
     Write-ToolkitLog "RUN  $($Fix.Name)"
