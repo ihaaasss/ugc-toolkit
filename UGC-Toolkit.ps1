@@ -19,7 +19,7 @@
 # ---------------------------------------------------------------------------
 $ToolkitUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/UGC-Toolkit.ps1'
 $ToolkitName    = 'Ihsan Tech Fix'
-$ToolkitVersion = '2.1'
+$ToolkitVersion = '2.2'
 $LogDir  = Join-Path $env:ProgramData 'IhsanTechFix'
 
 # Office printers for the one-click install cards. Add one line per printer.
@@ -307,6 +307,53 @@ $Fixes = @(
     @{ Tab='Network'; Name='Saved Wi-Fi networks'; Mode='Inline'
        Help='Lists Wi-Fi profiles saved on this computer.'
        Script={ netsh.exe wlan show profiles | Out-String } }
+
+    # ----- VPN (Tailscale) -----
+    @{ Tab='Network'; Name='Install Tailscale VPN'; Mode='Window'; Icon=0xE705
+       Help='Installs Tailscale and joins this PC to the company tailnet using an auth key (read from the NAS or typed in). No passwords are stored in this script.'
+       Script={
+           $exe = 'C:\Program Files\Tailscale\tailscale.exe'
+           if (-not (Test-Path $exe)) {
+               Write-Host 'Installing Tailscale...' -ForegroundColor Cyan
+               winget install --id Tailscale.Tailscale -e --silent --accept-package-agreements --accept-source-agreements
+               if (-not (Test-Path $exe)) {
+                   Write-Host 'winget not available - downloading the MSI instead...' -ForegroundColor Yellow
+                   $msi = Join-Path $env:TEMP 'tailscale-setup.msi'
+                   Invoke-WebRequest 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi' -OutFile $msi -UseBasicParsing
+                   Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn TS_UNATTENDEDMODE=always" -Wait
+               }
+           } else { Write-Host 'Tailscale is already installed.' -ForegroundColor Green }
+           if (-not (Test-Path $exe)) { Write-Host 'Tailscale could not be installed.' -ForegroundColor Red; return }
+
+           # Auth key: from the NAS file if present, otherwise ask
+           $keyFile = '\\10.10.10.209\UGC Public\IHSAN\Softwares\Tailscale\authkey.txt'
+           $key = $null
+           if (Test-Path $keyFile) { $key = (Get-Content $keyFile -Raw).Trim(); Write-Host 'Using the auth key from the NAS.' -ForegroundColor Green }
+           if (-not $key) {
+               Write-Host "`nPaste the Tailscale auth key (tskey-auth-...), or press Enter to sign in through the browser instead:" -ForegroundColor Cyan
+               $sec = Read-Host -AsSecureString
+               $key = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
+           }
+           $hostName = ($env:COMPUTERNAME).ToLower()
+           if ($key) {
+               & $exe up --authkey $key --unattended --hostname $hostName --reset
+           } else {
+               Write-Host 'A browser window will open. Sign in with the company Tailscale account.' -ForegroundColor Yellow
+               & $exe up --unattended --hostname $hostName --reset
+           }
+           Write-Host "`nStatus:" -ForegroundColor Cyan
+           & $exe status
+           Write-Host "`nThis PC's Tailscale IP: $(& $exe ip -4)" -ForegroundColor Green
+       } }
+
+    @{ Tab='Network'; Name='Tailscale status'; Mode='Inline'; Icon=0xE705
+       Help='Shows whether this PC is connected to the tailnet, its Tailscale IP and the other devices.'
+       Script={
+           $exe = 'C:\Program Files\Tailscale\tailscale.exe'
+           if (-not (Test-Path $exe)) { 'Tailscale is not installed. Use "Install Tailscale VPN".'; return }
+           "Tailscale IP: $(& $exe ip -4)"
+           & $exe status | Out-String -Width 200
+       } }
 
     # ----- OUTLOOK & OFFICE -----
     # These act on the person signed in to Windows, even when the toolkit was
