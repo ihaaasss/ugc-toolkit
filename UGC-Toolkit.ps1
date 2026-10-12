@@ -43,7 +43,7 @@ $ScriptsApi = 'https://api.github.com/repos/ihaaasss/ugc-toolkit/contents/script
 # Startup PIN. Only the SHA-256 hash is stored here, not the PIN itself.
 # To change the PIN, run this and paste the result below:
 #   $p='NEWPIN'; -join ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($p)) | % { $_.ToString('x2') })
-$PinHash = '1df015d06e08a06891c2d12ae7fc8d5050f6f7984b639aa9de19fc1f0195c15f'
+$PinHash = '927dd158f4450efb25e93edef690022cb4e0ede3fb8fd91076589a95ce61985d'
 
 # Office printers for the one-click install cards. Add one line per printer.
 #   Driver = the exact driver name inside the .inf file
