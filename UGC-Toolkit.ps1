@@ -19,7 +19,7 @@
 # ---------------------------------------------------------------------------
 $ToolkitUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/UGC-Toolkit.ps1'
 $ToolkitName    = 'Ihsan Tech Fix'
-$ToolkitVersion = '3.0'
+$ToolkitVersion = '3.1'
 $LogDir  = Join-Path $env:ProgramData 'IhsanTechFix'
 
 # Software for the one-click install cards (winget package IDs).
@@ -466,6 +466,97 @@ $Fixes = @(
     # ----- OUTLOOK & OFFICE -----
     # These act on the person signed in to Windows, even when the toolkit was
     # opened with a different admin account (see Get-LoggedOnUser in the prelude).
+    @{ Tab='Outlook & Office'; Name='Create email signature'; Mode='Inline'
+       Help='Asks for name, designation and mobile, then installs the UGC signature with the company banner and sets it as default in Outlook.'
+       # Inputs: shown in a form before the script runs; values arrive in $In.<Key>
+       Inputs=@(
+           @{ Key='Name';  Label='Full name';    Required=$true; Hint='e.g. Ihsan Ullah' }
+           @{ Key='Title'; Label='Designation';  Required=$true; Hint='e.g. IT Engineer' }
+           @{ Key='Phone'; Label='Mobile number';Required=$true; Hint='e.g. 0509154372' }
+           @{ Key='Email'; Label='Email';        Hint='Leave blank for firstname@ultraction.ae' }
+       )
+       Script={
+           # ---- Company details: edit here if anything changes ----
+           $Company    = 'Ultraction General Contracting LLC.'
+           $AddressHtm = 'Office 02, 1<sup>st</sup> Floor, 9 Ar Raha 6 St, Mussaffa - M3, Abu Dhabi, U.A.E.'
+           $AddressTxt = 'Office 02, 1st Floor, 9 Ar Raha 6 St, Mussaffa - M3, Abu Dhabi, U.A.E.'
+           $MailDomain = 'ultraction.ae'
+           $BannerUrl  = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/assets/UGC-signature-banner.jpg'
+           $Brown = '#833C0B'; $Teal = '#339999'; $Tan = '#996633'
+
+           $u = Get-LoggedOnUser
+           if (-not $u) { 'No user is signed in to Windows.'; return }
+
+           # ---- Clean up what was typed ----
+           $name  = ($In.Name  -replace '\s+', ' ').Trim()
+           $title = ($In.Title -replace '\s+', ' ').Trim()
+           $digits = ($In.Phone -replace '\D', '') -replace '^(00)?971', '' -replace '^0', ''
+           $phone = if ($digits -match '^\d{8,9}$') { "(+971) $digits" } else { $In.Phone.Trim() }
+           $email = "$($In.Email)".Trim().ToLower()
+           if (-not $email) { $email = (($name -split ' ')[0].ToLower() -replace '[^a-z0-9.\-]', '') + "@$MailDomain" }
+
+           # ---- Signature folder of the signed-in user (handles redirected AppData) ----
+           $appData = (Get-ItemProperty "$($u.Hive)\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders" -Name AppData -ErrorAction SilentlyContinue).AppData
+           if (-not $appData -or $appData -like '%*') { $appData = Join-Path $u.ProfilePath 'AppData\Roaming' }
+           $sigFolder = (Get-ItemProperty "$($u.Hive)\Software\Microsoft\Office\16.0\Common\General" -Name Signatures -ErrorAction SilentlyContinue).Signatures
+           if (-not $sigFolder) { $sigFolder = 'Signatures' }
+           $sigDir  = Join-Path $appData "Microsoft\$sigFolder"
+           $sigName = ('UGC - ' + $name) -replace '[\\/:*?"<>|]', ''
+           $filesDir = Join-Path $sigDir "$sigName`_files"
+           New-Item $filesDir -ItemType Directory -Force | Out-Null
+
+           # ---- Banner image: download, keep a cached copy for offline use ----
+           $cache = Join-Path $env:ProgramData 'IhsanTechFix\UGC-signature-banner.jpg'
+           $img   = Join-Path $filesDir 'image001.jpg'
+           try {
+               [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+               Invoke-WebRequest -Uri $BannerUrl -OutFile $cache -UseBasicParsing -TimeoutSec 30
+           } catch { "Banner download failed ($($_.Exception.Message)); using cached copy if available." }
+           if (-not (Test-Path $cache)) { throw 'Banner image not available (no internet and no cached copy).' }
+           Copy-Item $cache $img -Force
+
+           # ---- HTML signature (Outlook embeds the image when the mail is sent) ----
+           $h = { param($s) [System.Net.WebUtility]::HtmlEncode($s) }
+           $font = "font-family:Calibri,sans-serif"
+           $imgSrc = [Uri]::EscapeDataString("$sigName`_files") + '/image001.jpg'
+           $html = @"
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="Generator" content="Ihsan Tech Fix">
+<style>p.UgcSig{margin:0in;line-height:115%;$font;}</style></head>
+<body lang="EN-US"><div>
+<p class="UgcSig"><b><span style="font-size:12pt;$font;color:$Brown">$(& $h $name)</span></b></p>
+<p class="UgcSig"><b><span style="font-size:10pt;$font;color:$Brown">$(& $h $title)</span></b></p>
+<p class="UgcSig"><span style="font-size:10pt;$font;color:$Brown">Email: </span><a href="mailto:$(& $h $email)"><span style="font-size:10pt;$font;color:$Teal">$(& $h $email)</span></a></p>
+<p class="UgcSig"><span style="font-size:10pt;$font;color:$Brown">Mobile #: $(& $h $phone)</span></p>
+<p class="UgcSig"><b><span style="font-size:12pt;$font;color:$Brown">$(& $h $Company)</span></b></p>
+<p class="UgcSig"><span style="font-size:8pt;$font;color:$Tan">$AddressHtm</span></p>
+<p class="UgcSig"><img width="700" height="104" style="width:7.29in;height:1.08in" src="$imgSrc" alt="Ultraction General Contracting - www.ultraction.ae"></p>
+</div></body></html>
+"@
+           $text = "$name`r`n$title`r`nEmail: $email`r`nMobile #: $phone`r`n$Company`r`n$AddressTxt`r`n"
+           $utf8Bom = New-Object System.Text.UTF8Encoding($true)
+           [IO.File]::WriteAllText((Join-Path $sigDir "$sigName.htm"), $html, $utf8Bom)
+           [IO.File]::WriteAllText((Join-Path $sigDir "$sigName.txt"), $text, [Text.Encoding]::Unicode)
+           Remove-Item (Join-Path $sigDir "$sigName.rtf") -ErrorAction SilentlyContinue   # stale RTF would override
+
+           # ---- Make it the default for new mails and replies ----
+           $ms = "$($u.Hive)\Software\Microsoft\Office\16.0\Common\MailSettings"
+           if (-not (Test-Path $ms)) { New-Item $ms -Force | Out-Null }
+           Set-ItemProperty $ms -Name NewSignature   -Value $sigName
+           Set-ItemProperty $ms -Name ReplySignature -Value $sigName
+           # Cloud (roaming) signatures ignore local defaults - turn them off for this user
+           $setup = "$($u.Hive)\Software\Microsoft\Office\16.0\Outlook\Setup"
+           if (-not (Test-Path $setup)) { New-Item $setup -Force | Out-Null }
+           Set-ItemProperty $setup -Name DisableRoamingSignaturesTemporaryToggle -Value 1 -Type DWord
+
+           "Signature '$sigName' created for $($u.Name)"
+           "  $name | $title | $email | $phone"
+           "  Folder: $sigDir"
+           'Set as default for new emails and replies.'
+           if (Get-Process outlook -ErrorAction SilentlyContinue) { 'Outlook is open: close and reopen it to load the new signature.' }
+           'Note: the "new Outlook" app does not use local signatures; this works in classic Outlook.'
+       } }
+
     @{ Tab='Outlook & Office'; Name='Rebuild Outlook profile'; Mode='Inline'; Confirm=$true
        Help='One-click fix for most Outlook problems: backs up the old profile, creates a fresh one and sets it as default. Outlook then sets up the mailbox automatically.'
        Script={
@@ -725,6 +816,7 @@ $FixIcons = @{
     'Reset network stack'             = 0xE7BA
     'Saved Wi-Fi networks'            = 0xE701
     'Clear Teams cache'               = 0xE716
+    'Create email signature'          = 0xE70F
     'Rebuild Outlook profile'         = 0xE715
     'Restore previous Outlook profile'= 0xE7A7
     'Open Outlook in Safe Mode'       = 0xEA18
@@ -778,6 +870,66 @@ function Update-Status {
     }
 }
 
+# Small form that asks for the values a fix needs (fixes with an Inputs list).
+# Returns a hashtable Key -> text, or $null if cancelled.
+function Show-InputDialog($Fix) {
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = "$ToolkitName - $($Fix.Name)"
+    $dlg.FormBorderStyle = 'FixedDialog'; $dlg.MaximizeBox = $false; $dlg.MinimizeBox = $false
+    $dlg.StartPosition = 'CenterParent'
+    $dlg.BackColor = $C.Panel; $dlg.ForeColor = $C.Text; $dlg.Font = New-UiFont 10
+
+    $head = New-Object System.Windows.Forms.Label
+    $head.Text = $Fix.Name; $head.Font = New-UiFont 13 'Bold'
+    $head.SetBounds(20, 14, 420, 28)
+    $dlg.Controls.Add($head)
+
+    $y = 52; $boxes = @{}
+    foreach ($f in $Fix.Inputs) {
+        $lbl = New-Object System.Windows.Forms.Label
+        $lbl.Text = $f.Label + $(if ($f.Required) { ' *' } else { '' })
+        $lbl.ForeColor = $C.Muted; $lbl.SetBounds(20, $y, 420, 20)
+        $tb = New-Object System.Windows.Forms.TextBox
+        $tb.SetBounds(20, $y + 21, 420, 26)
+        $tb.BackColor = $C.Card; $tb.ForeColor = $C.Text; $tb.BorderStyle = 'FixedSingle'
+        if ($f.Default) { $tb.Text = $f.Default }
+        if ($f.Hint) { $script:Tips.SetToolTip($tb, $f.Hint); $lbl.Text += "   ($($f.Hint))" }
+        $dlg.Controls.AddRange(@($lbl, $tb))
+        $boxes[$f.Key] = $tb
+        $y += 58
+    }
+
+    $ok = New-Object System.Windows.Forms.Button
+    $ok.Text = 'Create'; $ok.SetBounds(240, $y + 8, 96, 32)
+    $ok.FlatStyle = 'Flat'; $ok.BackColor = $C.Accent; $ok.ForeColor = [System.Drawing.Color]::White
+    $ok.FlatAppearance.BorderSize = 0
+    $cancel = New-Object System.Windows.Forms.Button
+    $cancel.Text = 'Cancel'; $cancel.SetBounds(344, $y + 8, 96, 32)
+    $cancel.FlatStyle = 'Flat'; $cancel.BackColor = $C.Card; $cancel.ForeColor = $C.Text
+    $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $dlg.Controls.AddRange(@($ok, $cancel))
+    $dlg.AcceptButton = $ok; $dlg.CancelButton = $cancel
+    $dlg.ClientSize = New-Object System.Drawing.Size(460, ($y + 56))
+
+    $ok.Add_Click({
+        foreach ($f in $Fix.Inputs) {
+            if ($f.Required -and -not $boxes[$f.Key].Text.Trim()) {
+                [System.Windows.Forms.MessageBox]::Show("Please fill in '$($f.Label)'.", $ToolkitName) | Out-Null
+                $boxes[$f.Key].Focus(); return
+            }
+        }
+        $dlg.DialogResult = [System.Windows.Forms.DialogResult]::OK
+        $dlg.Close()
+    }.GetNewClosure())
+
+    $result = $dlg.ShowDialog($form)
+    if ($result -ne [System.Windows.Forms.DialogResult]::OK) { $dlg.Dispose(); return $null }
+    $values = @{}
+    foreach ($k in $boxes.Keys) { $values[$k] = $boxes[$k].Text.Trim() }
+    $dlg.Dispose()
+    return $values
+}
+
 function Invoke-Fix($Fix) {
     if ($Fix.Confirm) {
         $answer = [System.Windows.Forms.MessageBox]::Show(
@@ -787,11 +939,20 @@ function Invoke-Fix($Fix) {
         if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
     }
 
+    # Fixes with Inputs: ask first, then hand the answers to the script as $In
+    $inputLine = ''
+    if ($Fix.Inputs) {
+        $values = Show-InputDialog $Fix
+        if (-not $values) { return }
+        $pairs = $values.GetEnumerator() | ForEach-Object { "'{0}'='{1}'" -f $_.Key, ($_.Value -replace "['\u2018\u2019\u201A\u201B]", "''") }
+        $inputLine = '$In = @{' + ($pairs -join '; ') + "}`n"
+    }
+
     Write-ToolkitLog "RUN  $($Fix.Name)"
     Add-Output "`r`n$Play $($Fix.Name)   [$(Get-Date -Format 'HH:mm:ss')]" $C.Accent
 
     if ($Fix.Mode -eq 'Window') {
-        $body  = $Prelude + "`n" + $Fix.Script.ToString() +
+        $body  = $Prelude + "`n" + $inputLine + $Fix.Script.ToString() +
                  "`nWrite-Host `"`n--- Finished. You can close this window. ---`" -ForegroundColor Green"
         $title = "`$Host.UI.RawUI.WindowTitle = '$ToolkitName - $($Fix.Name)'`n"
         Start-Process powershell.exe -ArgumentList @(
@@ -803,7 +964,7 @@ function Invoke-Fix($Fix) {
         $ps.RunspacePool = $script:Pool
         # A runspace has no console, so Out-String needs an explicit width
         $setup = "`$PSDefaultParameterValues['Out-String:Width'] = 220`n"
-        [void]$ps.AddScript($setup + $Prelude + "`n" + $Fix.Script.ToString() + "`n")
+        [void]$ps.AddScript($setup + $Prelude + "`n" + $inputLine + $Fix.Script.ToString() + "`n")
         [void]$ps.AddCommand('Out-String').AddParameter('Width', 220)
         $handle = $ps.BeginInvoke()
         $script:RunningJobs[[guid]::NewGuid().ToString()] = @{ Name = $Fix.Name; PS = $ps; Handle = $handle }

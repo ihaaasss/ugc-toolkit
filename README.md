@@ -17,3 +17,9 @@ Offline: copy `UGC-Toolkit.ps1` and `Run-Toolkit.cmd` to a USB stick or share an
 ## Add a fix
 
 Copy any `@{ Tab=...; Name=...; Help=...; Mode=...; Script={...} }` block in `$Fixes`, edit it, commit and push. A new `Tab` value creates a new tab.
+
+A fix that needs details from you can add an `Inputs=@( @{ Key='Name'; Label='Full name'; Required=$true } )` list. The toolkit shows a form first and the answers reach the script as `$In.Name`, `$In.Title`, etc. (see **Create email signature** on the Outlook & Office tab).
+
+## Email signature
+
+**Outlook & Office > Create email signature** asks for name, designation, mobile (and optionally email), then installs the UGC signature with the banner from `assets/UGC-signature-banner.jpg` into the signed-in user's Outlook and makes it the default for new mails and replies. Classic Outlook only.
