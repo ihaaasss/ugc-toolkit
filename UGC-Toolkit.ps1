@@ -19,7 +19,7 @@
 # ---------------------------------------------------------------------------
 $ToolkitUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/UGC-Toolkit.ps1'
 $ToolkitName    = 'Ihsan Tech Fix'
-$ToolkitVersion = '3.7'
+$ToolkitVersion = '3.8'
 $LogDir  = Join-Path $env:ProgramData 'IhsanTechFix'
 
 # Software for the one-click install cards (winget package IDs).
@@ -399,8 +399,8 @@ $Fixes = @(
        Script={ Start-Service w32time -ErrorAction SilentlyContinue
                 w32tm.exe /resync /force | Out-String } }
 
-    @{ Tab='System Repair'; Name='Pause Defender until restart'; Mode='Inline'; Confirm=$true
-       Help='Turns off Defender real-time, cloud, sample submission and controlled-folder access, then automatically restores them at the next restart. For installs that get falsely blocked.'
+    @{ Tab='System Repair'; Name='Turn off Defender protection'; Mode='Inline'; Confirm=$true
+       Help='Turns off Defender real-time, cloud, sample submission and controlled-folder access and LEAVES them off. Use "Turn on Defender protection" to restore. For installs that get falsely blocked.'
        Script={
            # Several Defender settings cannot be changed by any script while Tamper
            # Protection is on - Microsoft blocks it. Say so instead of pretending.
@@ -412,14 +412,23 @@ $Fixes = @(
                return
            }
 
-           # 1. Remember the current state so the restart task restores it exactly
+           # 1. Save the current state so "Turn on" can restore exactly what was here
            $p = Get-MpPreference
-           $rt   = [bool]$p.DisableRealtimeMonitoring
-           $maps = [int]$p.MAPSReporting
-           $samp = [int]$p.SubmitSamplesConsent
-           $cfa  = [int]$p.EnableControlledFolderAccess
+           $state = [ordered]@{
+               DisableRealtimeMonitoring    = [bool]$p.DisableRealtimeMonitoring
+               MAPSReporting                = [int]$p.MAPSReporting
+               SubmitSamplesConsent         = [int]$p.SubmitSamplesConsent
+               EnableControlledFolderAccess = [int]$p.EnableControlledFolderAccess
+               SavedAt                      = (Get-Date).ToString('s')
+           }
+           $dir = Join-Path $env:ProgramData 'IhsanTechFix'
+           New-Item $dir -ItemType Directory -Force | Out-Null
+           $state | ConvertTo-Json | Set-Content (Join-Path $dir 'defender-state.json') -Encoding UTF8
 
-           # 2. Turn the scriptable protections off
+           # Clean up the old auto-restore task from earlier versions, if present
+           Unregister-ScheduledTask -TaskName 'IhsanTechFix_RestoreDefender' -Confirm:$false -ErrorAction SilentlyContinue
+
+           # 2. Turn the scriptable protections off and leave them off
            Set-MpPreference -DisableRealtimeMonitoring $true       -ErrorAction SilentlyContinue
            Set-MpPreference -MAPSReporting 0                       -ErrorAction SilentlyContinue   # cloud-delivered off
            Set-MpPreference -SubmitSamplesConsent 2               -ErrorAction SilentlyContinue   # never submit samples
@@ -427,35 +436,48 @@ $Fixes = @(
            Start-Sleep 1
            $now = Get-MpPreference
 
-           # 3. Build a task that restores the captured state at next boot, then deletes itself.
-           #    Runs as SYSTEM so it works whoever logs in.
-           $taskName = 'IhsanTechFix_RestoreDefender'
-           $restore = @"
-Set-MpPreference -DisableRealtimeMonitoring `$$rt -ErrorAction SilentlyContinue
-Set-MpPreference -MAPSReporting $maps -ErrorAction SilentlyContinue
-Set-MpPreference -SubmitSamplesConsent $samp -ErrorAction SilentlyContinue
-Set-MpPreference -EnableControlledFolderAccess $cfa -ErrorAction SilentlyContinue
-Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-MpScan -ScanType QuickScan' -ErrorAction SilentlyContinue
-Unregister-ScheduledTask -TaskName '$taskName' -Confirm:`$false -ErrorAction SilentlyContinue
-"@
-           $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($restore))
-           $action    = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -EncodedCommand $enc"
-           $trigger   = New-ScheduledTaskTrigger -AtStartup
-           $principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -RunLevel Highest   # LocalSystem
-           Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
-
-           # 4. Report what actually happened (not what we asked for)
-           $onoff = { param($b) if ($b) { 'OFF' } else { 'still ON' } }
-           "Real-time protection      : $(& $onoff $now.DisableRealtimeMonitoring)"
+           "Real-time protection      : $(if ($now.DisableRealtimeMonitoring) { 'OFF' } else { 'still ON' })"
            "Cloud-delivered protection: $(if ($now.MAPSReporting -eq 0) { 'OFF' } else { 'still ON' })"
            "Sample submission         : $(if ($now.SubmitSamplesConsent -eq 2) { 'OFF' } else { 'still ON' })"
            "Controlled folder access  : $(if ([int]$now.EnableControlledFolderAccess -eq 0) { 'OFF' } else { 'still ON' })"
            if (-not $now.DisableRealtimeMonitoring) {
                'Nothing changed - a policy (Intune/GPO) or Tamper Protection is enforcing Defender. It cannot be scripted off on this machine.'
            } else {
-               'Protection is paused. It turns back ON automatically at the next restart (and a quick scan runs then).'
+               'Protection is OFF and will stay off until you click "Turn on Defender protection".'
                'Smart App Control and Tamper Protection are not touched - Windows does not allow scripts to change those.'
            }
+       } }
+
+    @{ Tab='System Repair'; Name='Turn on Defender protection'; Mode='Inline'
+       Help='Turns Defender protection back on - restores the exact state saved by "Turn off Defender protection" (or secure defaults), and runs a quick scan.'
+       Script={
+           # Restore the saved state if present, otherwise secure defaults
+           $file = Join-Path $env:ProgramData 'IhsanTechFix\defender-state.json'
+           $rt = $false; $maps = 2; $samp = 1; $cfa = 0; $src = 'secure defaults'
+           if (Test-Path $file) {
+               try {
+                   $s = Get-Content $file -Raw | ConvertFrom-Json
+                   $rt = [bool]$s.DisableRealtimeMonitoring; $maps = [int]$s.MAPSReporting
+                   $samp = [int]$s.SubmitSamplesConsent; $cfa = [int]$s.EnableControlledFolderAccess
+                   $src = "the state saved at $($s.SavedAt)"
+               } catch { 'Saved state unreadable - restoring secure defaults instead.' }
+           }
+           Set-MpPreference -DisableRealtimeMonitoring $rt   -ErrorAction SilentlyContinue
+           Set-MpPreference -MAPSReporting $maps             -ErrorAction SilentlyContinue
+           Set-MpPreference -SubmitSamplesConsent $samp      -ErrorAction SilentlyContinue
+           Set-MpPreference -EnableControlledFolderAccess $cfa -ErrorAction SilentlyContinue
+           Unregister-ScheduledTask -TaskName 'IhsanTechFix_RestoreDefender' -Confirm:$false -ErrorAction SilentlyContinue
+           Remove-Item $file -ErrorAction SilentlyContinue
+           Start-Sleep 1
+           $now = Get-MpPreference
+
+           "Restored from: $src"
+           "Real-time protection      : $(if (-not $now.DisableRealtimeMonitoring) { 'ON' } else { 'still OFF' })"
+           "Cloud-delivered protection: $(if ($now.MAPSReporting -ne 0) { 'ON' } else { 'OFF' })"
+           "Sample submission         : $(if ($now.SubmitSamplesConsent -ne 2) { 'ON' } else { 'OFF' })"
+           "Controlled folder access  : $(if ([int]$now.EnableControlledFolderAccess -ne 0) { 'ON' } else { 'OFF (Windows default)' })"
+           Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-MpScan -ScanType QuickScan' -ErrorAction SilentlyContinue
+           'Protection restored. A quick scan is running in the background.'
        } }
 
     # ----- NETWORK -----
@@ -929,7 +951,8 @@ $FixIcons = @{
     'Restart Explorer'                = 0xE72C
     'Group Policy update'             = 0xE713
     'Sync Windows time'               = 0xE823
-    'Pause Defender until restart'    = 0xE730
+    'Turn off Defender protection'    = 0xE730
+    'Turn on Defender protection'     = 0xE72E
     'IP configuration'                = 0xE968
     'Internet & DNS test'             = 0xE774
     'Flush DNS + renew IP'            = 0xE72C
