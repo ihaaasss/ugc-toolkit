@@ -19,8 +19,18 @@
 # ---------------------------------------------------------------------------
 $ToolkitUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/UGC-Toolkit.ps1'
 $ToolkitName    = 'Ihsan Tech Fix'
-$ToolkitVersion = '2.0'
+$ToolkitVersion = '2.1'
 $LogDir  = Join-Path $env:ProgramData 'IhsanTechFix'
+
+# Office printers for the one-click install cards. Add one line per printer.
+#   Driver = the exact driver name inside the .inf file
+#   Source = a folder (or .zip) with the extracted driver, on the NAS or a web link
+$PrinterCatalog = @(
+    @{ Name   = 'Canon-Office'
+       IP     = '10.10.10.189'
+       Driver = 'Canon Generic Plus UFR II'
+       Source = '\\10.10.10.209\UGC Public\IHSAN\Softwares\Drivers\Canon-Generic-Plus-UFRII' }
+)
 $LogFile = Join-Path $LogDir 'toolkit.log'
 
 # ---------------------------------------------------------------------------
@@ -54,6 +64,96 @@ New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
+
+# ---------------------------------------------------------------------------
+# PRELUDE - helper functions available inside every fix
+#   Get-LoggedOnUser     : the person signed in to Windows (name, SID, profile
+#                          folder, registry hive) - correct even when the toolkit
+#                          runs under a separate admin account
+#   Start-AsLoggedOnUser : opens a program in that person's session
+# ---------------------------------------------------------------------------
+$Prelude = @'
+function Get-LoggedOnUser {
+    $name = (Get-CimInstance Win32_ComputerSystem).UserName
+    if (-not $name) {
+        $owner = Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | Select-Object -First 1 |
+                 Invoke-CimMethod -MethodName GetOwner
+        if ($owner) { $name = "$($owner.Domain)\$($owner.User)" }
+    }
+    if (-not $name) { return $null }
+    $sid  = (New-Object System.Security.Principal.NTAccount($name)).Translate([System.Security.Principal.SecurityIdentifier]).Value
+    $prof = (Get-CimInstance Win32_UserProfile -Filter "SID='$sid'").LocalPath
+    [pscustomobject]@{ Name = $name; Sid = $sid; ProfilePath = $prof; Hive = "Registry::HKEY_USERS\$sid" }
+}
+
+function Start-AsLoggedOnUser([string]$Program, [string]$Arguments = '') {
+    $u = Get-LoggedOnUser
+    $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if (-not $u -or $u.Sid -eq $me) {
+        if ($Arguments) { Start-Process $Program -ArgumentList $Arguments } else { Start-Process $Program }
+        return
+    }
+    # Different account: launch through a one-time scheduled task in the user's session
+    $task = 'IhsanTechFix_Launch'
+    $action = if ($Arguments) { New-ScheduledTaskAction -Execute $Program -Argument $Arguments } else { New-ScheduledTaskAction -Execute $Program }
+    $principal = New-ScheduledTaskPrincipal -UserId $u.Name -LogonType Interactive
+    Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Force | Out-Null
+    Start-ScheduledTask -TaskName $task
+    Start-Sleep 3
+    Unregister-ScheduledTask -TaskName $task -Confirm:$false
+}
+
+function Install-NetworkPrinter([string]$Name, [string]$IP, [string]$Driver, [string]$Source) {
+    "Printer : $Name"
+    "Address : $IP"
+    if (-not (Test-Connection $IP -Count 2 -Quiet)) { "WARNING: $IP does not answer ping. Continuing anyway." }
+
+    # 1. Driver
+    if (Get-PrinterDriver -Name $Driver -ErrorAction SilentlyContinue) {
+        "Driver  : '$Driver' already installed"
+    } else {
+        $work = $Source
+        if ($Source -match '^https?://') {
+            $zip = Join-Path $env:TEMP "IhsanTechFix_driver.zip"
+            "Downloading driver..."
+            Invoke-WebRequest -Uri $Source -OutFile $zip -UseBasicParsing
+            $work = $zip
+        }
+        if ($work -like '*.zip') {
+            $dest = Join-Path $env:TEMP ("IhsanTechFix_drv_" + [guid]::NewGuid().ToString('N'))
+            Expand-Archive -Path $work -DestinationPath $dest -Force
+            $work = $dest
+        }
+        if (-not (Test-Path $work)) { throw "Driver folder not found: $work" }
+        $inf = Get-ChildItem $work -Recurse -Filter *.inf |
+               Where-Object { Select-String -Path $_.FullName -Pattern $Driver -SimpleMatch -Quiet } |
+               Sort-Object { if ($_.FullName -match 'x64|amd64|64') { 0 } else { 1 } } | Select-Object -First 1
+        if (-not $inf) { throw "No .inf file mentioning '$Driver' was found in $work" }
+        "Driver  : installing from $($inf.FullName)"
+        pnputil.exe /add-driver "$($inf.FullName)" /install | Out-Null
+        Add-PrinterDriver -Name $Driver
+        "Driver  : installed"
+    }
+
+    # 2. Port
+    $port = "IP_$IP"
+    if (-not (Get-PrinterPort -Name $port -ErrorAction SilentlyContinue)) {
+        Add-PrinterPort -Name $port -PrinterHostAddress $IP
+        "Port    : $port created"
+    } else { "Port    : $port already exists" }
+
+    # 3. Printer
+    if (Get-Printer -Name $Name -ErrorAction SilentlyContinue) {
+        Set-Printer -Name $Name -DriverName $Driver -PortName $port
+        "Printer : '$Name' updated to the correct driver and port"
+    } else {
+        Add-Printer -Name $Name -DriverName $Driver -PortName $port
+        "Printer : '$Name' added"
+    }
+    "Done. '$Name' is ready to use."
+}
+'@
+. ([scriptblock]::Create($Prelude))
 
 # ---------------------------------------------------------------------------
 # 3. THE FIXES
@@ -208,30 +308,101 @@ $Fixes = @(
        Help='Lists Wi-Fi profiles saved on this computer.'
        Script={ netsh.exe wlan show profiles | Out-String } }
 
-    # ----- OFFICE & PRINTERS -----
-    @{ Tab='Office & Printers'; Name='Clear Teams cache'; Mode='Inline'; Confirm=$true
-       Help='Closes Teams and clears the cache for classic and new Teams (current user). Fixes sign-in and loading issues.'
+    # ----- OUTLOOK & OFFICE -----
+    # These act on the person signed in to Windows, even when the toolkit was
+    # opened with a different admin account (see Get-LoggedOnUser in the prelude).
+    @{ Tab='Outlook & Office'; Name='Rebuild Outlook profile'; Mode='Inline'; Confirm=$true
+       Help='One-click fix for most Outlook problems: backs up the old profile, creates a fresh one and sets it as default. Outlook then sets up the mailbox automatically.'
        Script={
+           $u = Get-LoggedOnUser
+           if (-not $u) { 'No user is signed in to Windows.'; return }
+           Get-Process outlook -ErrorAction SilentlyContinue | Stop-Process -Force
+           Start-Sleep 3
+           $base = "$($u.Hive)\Software\Microsoft\Office\16.0\Outlook"
+           if (-not (Test-Path $base)) { New-Item $base -Force | Out-Null }
+           $profiles = "$base\Profiles"
+           if (-not (Test-Path $profiles)) { New-Item $profiles -Force | Out-Null }
+
+           # 1. Back up the existing profiles
+           $bk = Join-Path $env:ProgramData "IhsanTechFix\Backups"
+           New-Item $bk -ItemType Directory -Force | Out-Null
+           $bkFile = Join-Path $bk ("OutlookProfiles_{0}_{1}.reg" -f $u.Name.Split('\')[-1], (Get-Date -Format yyyyMMdd-HHmm))
+           reg.exe export ("HKU\{0}\Software\Microsoft\Office\16.0\Outlook\Profiles" -f $u.Sid) $bkFile /y | Out-Null
+           "Backup of old profile(s): $bkFile"
+           $old = (Get-ItemProperty $base -Name DefaultProfile -ErrorAction SilentlyContinue).DefaultProfile
+           if ($old) { "Old default profile: $old (kept, not deleted)" }
+
+           # 2. Create a new empty profile and make it the default
+           $new = "Outlook_" + (Get-Date -Format 'yyyyMMdd_HHmm')
+           New-Item "$profiles\$new" -Force | Out-Null
+           Set-ItemProperty $base -Name DefaultProfile -Value $new
+           # Never ask which profile to use
+           $setup = "$base\Setup"
+           if (-not (Test-Path $setup)) { New-Item $setup -Force | Out-Null }
+           Remove-ItemProperty $setup -Name First-Run -ErrorAction SilentlyContinue
+
+           # 3. Let Outlook configure the Microsoft 365 mailbox by itself
+           $ad = "$base\AutoDiscover"
+           if (-not (Test-Path $ad)) { New-Item $ad -Force | Out-Null }
+           Set-ItemProperty $ad -Name ZeroConfigExchange -Value 1 -Type DWord
+           "New default profile: $new"
+
+           # 4. Open Outlook for the user
+           Start-AsLoggedOnUser 'outlook.exe'
+           'Outlook is opening with the new profile. Sign in if asked; the mailbox downloads in the background.'
+           'Old .ost cache files are not deleted. Use "Outlook cache (.ost) sizes" later to clean them up.'
+       } }
+
+    @{ Tab='Outlook & Office'; Name='Restore previous Outlook profile'; Mode='Inline'; Confirm=$true
+       Help='Undo for the rebuild: switches the default back to the profile that was used before.'
+       Script={
+           $u = Get-LoggedOnUser
+           $base = "$($u.Hive)\Software\Microsoft\Office\16.0\Outlook"
+           $names = Get-ChildItem "$base\Profiles" -ErrorAction SilentlyContinue | ForEach-Object PSChildName
+           $current = (Get-ItemProperty $base -Name DefaultProfile -ErrorAction SilentlyContinue).DefaultProfile
+           $prev = $names | Where-Object { $_ -ne $current -and $_ -notlike 'Outlook_2*' } | Select-Object -First 1
+           if (-not $prev) { $prev = $names | Where-Object { $_ -ne $current } | Sort-Object | Select-Object -Last 1 }
+           if (-not $prev) { 'No other profile found.'; return }
+           Get-Process outlook -ErrorAction SilentlyContinue | Stop-Process -Force
+           Set-ItemProperty $base -Name DefaultProfile -Value $prev
+           "Default profile switched from '$current' back to '$prev'."
+           "All profiles: $($names -join ', ')"
+       } }
+
+    @{ Tab='Outlook & Office'; Name='Open Outlook in Safe Mode'; Mode='Inline'
+       Help='Starts Outlook without add-ins. If it works in Safe Mode, a faulty add-in is the cause.'
+       Script={ Get-Process outlook -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 2
+                Start-AsLoggedOnUser 'outlook.exe' '/safe'; 'Outlook opened in Safe Mode.' } }
+
+    @{ Tab='Outlook & Office'; Name='Reset Outlook navigation pane'; Mode='Inline'
+       Help='Fixes Outlook crashing at start or a broken folder pane (outlook.exe /resetnavpane).'
+       Script={ Get-Process outlook -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 2
+                Start-AsLoggedOnUser 'outlook.exe' '/resetnavpane'; 'Navigation pane reset. Outlook is opening.' } }
+
+    @{ Tab='Outlook & Office'; Name='Clear Outlook RoamCache'; Mode='Inline'; Confirm=$true
+       Help='Closes Outlook and clears autocomplete and calendar cache. The mailbox is not touched.'
+       Script={
+           $u = Get-LoggedOnUser
+           Get-Process outlook -ErrorAction SilentlyContinue | Stop-Process -Force
+           Start-Sleep 2
+           $p = "$($u.ProfilePath)\AppData\Local\Microsoft\Outlook\RoamCache"
+           if (Test-Path $p) { Remove-Item "$p\*" -Recurse -Force -ErrorAction SilentlyContinue; "RoamCache cleared for $($u.Name)." }
+           else { 'No RoamCache folder found.' }
+       } }
+
+    @{ Tab='Outlook & Office'; Name='Clear Teams cache'; Mode='Inline'; Confirm=$true
+       Help='Closes Teams and clears the cache for classic and new Teams. Fixes sign-in and loading issues.'
+       Script={
+           $u = Get-LoggedOnUser
            Get-Process ms-teams, Teams -ErrorAction SilentlyContinue | Stop-Process -Force
            Start-Sleep 2
-           $u = $env:USERPROFILE
-           $paths = "$env:APPDATA\Microsoft\Teams",
-                    "$u\AppData\Local\Packages\MSTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams"
+           $paths = "$($u.ProfilePath)\AppData\Roaming\Microsoft\Teams",
+                    "$($u.ProfilePath)\AppData\Local\Packages\MSTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams"
            foreach ($p in $paths) { if (Test-Path $p) { Remove-Item "$p\*" -Recurse -Force -ErrorAction SilentlyContinue; "Cleared $p" } }
            'Done. Open Teams again.'
        } }
 
-    @{ Tab='Office & Printers'; Name='Repair Outlook profile cache'; Mode='Inline'; Confirm=$true
-       Help='Closes Outlook and clears RoamCache (autocomplete and calendar cache). The mailbox is not touched.'
-       Script={
-           Get-Process outlook -ErrorAction SilentlyContinue | Stop-Process -Force
-           Start-Sleep 2
-           $p = "$env:LOCALAPPDATA\Microsoft\Outlook\RoamCache"
-           if (Test-Path $p) { Remove-Item "$p\*" -Recurse -Force -ErrorAction SilentlyContinue; 'RoamCache cleared. Open Outlook again.' }
-           else { 'No RoamCache folder found.' }
-       } }
-
-    @{ Tab='Office & Printers'; Name='Office Quick Repair'; Mode='Inline'
+    @{ Tab='Outlook & Office'; Name='Office Quick Repair'; Mode='Inline'
        Help='Starts the Microsoft 365 Click-to-Run quick repair.'
        Script={
            $c2r = "$env:CommonProgramFiles\microsoft shared\ClickToRun\OfficeClickToRun.exe"
@@ -241,7 +412,9 @@ $Fixes = @(
            } else { 'Microsoft 365 Click-to-Run not found.' }
        } }
 
-    @{ Tab='Office & Printers'; Name='Fix stuck print queue'; Mode='Inline'; Confirm=$true
+    # ----- PRINTERS -----
+    # One "Install" card per printer in $PrinterCatalog is added automatically below.
+    @{ Tab='Printers'; Name='Fix stuck print queue'; Mode='Inline'; Confirm=$true
        Help='Stops the spooler, deletes stuck jobs, starts the spooler.'
        Script={
            Stop-Service Spooler -Force
@@ -250,9 +423,19 @@ $Fixes = @(
            'Print queue cleared and spooler restarted.'
        } }
 
-    @{ Tab='Office & Printers'; Name='List printers'; Mode='Inline'
-       Help='Shows installed printers, ports and status.'
+    @{ Tab='Printers'; Name='List printers'; Mode='Inline'
+       Help='Shows installed printers, ports, drivers and status.'
        Script={ Get-Printer | Select-Object Name, PortName, DriverName, PrinterStatus | Format-Table -AutoSize | Out-String -Width 200 } }
+
+    @{ Tab='Printers'; Name='Remove offline printers'; Mode='Inline'; Confirm=$true
+       Help='Deletes network printers that show Error or Offline (virtual printers like PDF are kept). Reinstall with the Install cards.'
+       Script={
+           $gone = Get-Printer | Where-Object {
+               $_.Type -eq 'Local' -and $_.PortName -notmatch '^(PORTPROMPT|nul|FILE|AD_Port|Documents)' -and
+               ($_.PrinterStatus -match 'Offline|Error') }
+           if (-not $gone) { 'No offline or error printers found.'; return }
+           foreach ($p in $gone) { Remove-Printer -Name $p.Name -ErrorAction SilentlyContinue; "Removed: $($p.Name) ($($p.PortName))" }
+       } }
 
     # ----- INFO -----
     @{ Tab='Info'; Name='Computer summary'; Mode='Inline'
@@ -298,6 +481,14 @@ $Fixes = @(
                   Format-Table -AutoSize -Wrap | Out-String -Width 220 } }
 )
 
+# One "Install" card for every printer in $PrinterCatalog
+foreach ($pr in $PrinterCatalog) {
+    $code = "Install-NetworkPrinter -Name '{0}' -IP '{1}' -Driver '{2}' -Source '{3}'" -f $pr.Name, $pr.IP, $pr.Driver, $pr.Source
+    $Fixes += @{ Tab='Printers'; Name="Install $($pr.Name)"; Mode='Inline'; Icon=0xE749
+                 Help="One-click install of $($pr.Name) at $($pr.IP): adds the $($pr.Driver) driver, the network port and the printer."
+                 Script=[scriptblock]::Create($code) }
+}
+
 # ---------------------------------------------------------------------------
 # 4. LOOK & FEEL
 # ---------------------------------------------------------------------------
@@ -331,7 +522,8 @@ $PageIcons = @{
     'Disk & Cleanup'    = 0xEDA2
     'System Repair'     = 0xE90F
     'Network'           = 0xE968
-    'Office & Printers' = 0xE749
+    'Outlook & Office'  = 0xE715
+    'Printers'          = 0xE749
     'Info'              = 0xE946
 }
 $FixIcons = @{
@@ -357,7 +549,12 @@ $FixIcons = @{
     'Reset network stack'             = 0xE7BA
     'Saved Wi-Fi networks'            = 0xE701
     'Clear Teams cache'               = 0xE716
-    'Repair Outlook profile cache'    = 0xE715
+    'Rebuild Outlook profile'         = 0xE715
+    'Restore previous Outlook profile'= 0xE7A7
+    'Open Outlook in Safe Mode'       = 0xEA18
+    'Reset Outlook navigation pane'   = 0xE72C
+    'Clear Outlook RoamCache'         = 0xE74D
+    'Remove offline printers'         = 0xE711
     'Office Quick Repair'             = 0xE90F
     'Fix stuck print queue'           = 0xE749
     'List printers'                   = 0xE8FD
@@ -413,7 +610,7 @@ function Invoke-Fix($Fix) {
     Add-Output "`r`n$Play $($Fix.Name)   [$(Get-Date -Format 'HH:mm:ss')]" $C.Accent
 
     if ($Fix.Mode -eq 'Window') {
-        $body  = $Fix.Script.ToString() +
+        $body  = $Prelude + "`n" + $Fix.Script.ToString() +
                  "`nWrite-Host `"`n--- Finished. You can close this window. ---`" -ForegroundColor Green"
         $title = "`$Host.UI.RawUI.WindowTitle = '$ToolkitName - $($Fix.Name)'`n"
         Start-Process powershell.exe -ArgumentList @(
@@ -421,7 +618,7 @@ function Invoke-Fix($Fix) {
             '-EncodedCommand', (ConvertTo-EncodedCommand ($title + $body)))
         Add-Output '  Opened in a separate window so you can follow the progress.' $C.Muted
     } else {
-        $job = Start-Job -ScriptBlock $Fix.Script
+        $job = Start-Job -ScriptBlock $Fix.Script -InitializationScript ([scriptblock]::Create($Prelude))
         $script:RunningJobs[$job.Id] = $Fix.Name
         Update-Status
     }
@@ -442,7 +639,7 @@ function New-FixCard($Fix) {
     $stripe.BackColor = if ($isRisky) { $C.Warn } else { $C.Accent }
 
     $icon = New-Object System.Windows.Forms.Label
-    $icon.Text = Get-Glyph $(if ($FixIcons[$Fix.Name]) { $FixIcons[$Fix.Name] } else { 0xE90F })
+    $icon.Text = Get-Glyph $(if ($Fix.Icon) { $Fix.Icon } elseif ($FixIcons[$Fix.Name]) { $FixIcons[$Fix.Name] } else { 0xE90F })
     $icon.Font = New-IconFont 20
     $icon.ForeColor = if ($isRisky) { $C.Warn } else { $C.Accent }
     $icon.Location = New-Object System.Drawing.Point(16, 14)
