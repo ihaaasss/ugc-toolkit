@@ -19,7 +19,7 @@
 # ---------------------------------------------------------------------------
 $ToolkitUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/UGC-Toolkit.ps1'
 $ToolkitName    = 'Ihsan Tech Fix'
-$ToolkitVersion = '2.6'
+$ToolkitVersion = '2.7'
 $LogDir  = Join-Path $env:ProgramData 'IhsanTechFix'
 
 # Startup PIN. Only the SHA-256 hash is stored here, not the PIN itself.
@@ -722,59 +722,62 @@ function Invoke-Fix($Fix) {
 }
 
 # Builds one clickable card: icon, title and a one-line description
+# Fonts, handlers and colours are created once and shared by every card
+# (creating them per card was a large part of the start-up time).
+$F = @{
+    Icon  = New-IconFont 20
+    Title = New-UiFont 10.5 'Bold'
+    Desc  = New-UiFont 8.5
+    Badge = New-UiFont 7.5 'Bold'
+    Nav   = New-UiFont 10.5
+    NavB  = New-UiFont 10.5 'Bold'
+}
+$HandCursor = [System.Windows.Forms.Cursors]::Hand
+$script:CardOf = { param($c) if ($c.Tag -is [hashtable]) { $c } else { $c.Parent } }
+$script:CardEnter = { (& $script:CardOf $this).BackColor = $C.CardHover }
+$script:CardLeave = { (& $script:CardOf $this).BackColor = $C.Card }
+$script:CardClick = { Invoke-Fix (& $script:CardOf $this).Tag }
+
 function New-FixCard($Fix) {
     $isRisky = [bool]$Fix.Confirm
-    $card = New-Object System.Windows.Forms.Panel
-    $card.Size = New-Object System.Drawing.Size(262, 92)
-    $card.Margin = New-Object System.Windows.Forms.Padding(8)
+    $tint = if ($isRisky) { $C.Warn } else { $C.Accent }
+
+    $card = [System.Windows.Forms.Panel]::new()
+    $card.Size = [System.Drawing.Size]::new(262, 92)
+    $card.Margin = [System.Windows.Forms.Padding]::new(8)
     $card.BackColor = $C.Card
-    $card.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $card.Cursor = $HandCursor
     $card.Tag = $Fix
 
-    $stripe = New-Object System.Windows.Forms.Panel
-    $stripe.Dock = 'Left'; $stripe.Width = 4
-    $stripe.BackColor = if ($isRisky) { $C.Warn } else { $C.Accent }
+    $stripe = [System.Windows.Forms.Panel]::new()
+    $stripe.Dock = 'Left'; $stripe.Width = 4; $stripe.BackColor = $tint
 
-    $icon = New-Object System.Windows.Forms.Label
-    $icon.Text = Get-Glyph $(if ($Fix.Icon) { $Fix.Icon } elseif ($FixIcons[$Fix.Name]) { $FixIcons[$Fix.Name] } else { 0xE90F })
-    $icon.Font = New-IconFont 20
-    $icon.ForeColor = if ($isRisky) { $C.Warn } else { $C.Accent }
-    $icon.Location = New-Object System.Drawing.Point(16, 14)
-    $icon.Size = New-Object System.Drawing.Size(36, 36)
+    $code = if ($Fix.Icon) { $Fix.Icon } elseif ($FixIcons[$Fix.Name]) { $FixIcons[$Fix.Name] } else { 0xE90F }
+    $icon = [System.Windows.Forms.Label]::new()
+    $icon.Text = [string][char]$code; $icon.Font = $F.Icon; $icon.ForeColor = $tint
+    $icon.SetBounds(16, 14, 36, 36)
 
-    $title = New-Object System.Windows.Forms.Label
-    $title.Text = $Fix.Name
-    $title.Font = New-UiFont 10.5 'Bold'
-    $title.ForeColor = $C.Text
-    $title.Location = New-Object System.Drawing.Point(58, 12)
-    $title.Size = New-Object System.Drawing.Size(196, 22)
-    $title.AutoEllipsis = $true
+    $title = [System.Windows.Forms.Label]::new()
+    $title.Text = $Fix.Name; $title.Font = $F.Title; $title.ForeColor = $C.Text
+    $title.SetBounds(58, 12, 196, 22); $title.AutoEllipsis = $true
 
-    $desc = New-Object System.Windows.Forms.Label
-    $desc.Text = $Fix.Help
-    $desc.Font = New-UiFont 8.5
-    $desc.ForeColor = $C.Muted
-    $desc.Location = New-Object System.Drawing.Point(58, 36)
-    $desc.Size = New-Object System.Drawing.Size(196, 48)
-    $desc.AutoEllipsis = $true
+    $desc = [System.Windows.Forms.Label]::new()
+    $desc.Text = $Fix.Help; $desc.Font = $F.Desc; $desc.ForeColor = $C.Muted
+    $desc.SetBounds(58, 36, 196, 48); $desc.AutoEllipsis = $true
 
-    $badge = New-Object System.Windows.Forms.Label
-    $badge.Font = New-UiFont 7.5 'Bold'
-    $badge.AutoSize = $true
-    $badge.Location = New-Object System.Drawing.Point(16, 66)
-    if ($isRisky)              { $badge.Text = 'CONFIRM'; $badge.ForeColor = $C.Warn }
+    $badge = [System.Windows.Forms.Label]::new()
+    $badge.Font = $F.Badge; $badge.AutoSize = $true
+    $badge.Location = [System.Drawing.Point]::new(16, 66)
+    if ($isRisky)                   { $badge.Text = 'CONFIRM'; $badge.ForeColor = $C.Warn }
     elseif ($Fix.Mode -eq 'Window') { $badge.Text = 'WINDOW';  $badge.ForeColor = $C.Accent2 }
-    else                       { $badge.Text = '';        }
 
     $card.Controls.AddRange(@($badge, $desc, $title, $icon, $stripe))
     $script:Tips.SetToolTip($card, $Fix.Help)
-
-    $enter = { $p = if ($this -is [System.Windows.Forms.Panel] -and $this.Tag) { $this } else { $this.Parent }; $p.BackColor = $C.CardHover }
-    $leave = { $p = if ($this -is [System.Windows.Forms.Panel] -and $this.Tag) { $this } else { $this.Parent }; $p.BackColor = $C.Card }
-    $click = { $p = if ($this -is [System.Windows.Forms.Panel] -and $this.Tag) { $this } else { $this.Parent }; Invoke-Fix $p.Tag }
     foreach ($ctl in @($card, $icon, $title, $desc, $badge)) {
-        $ctl.Add_MouseEnter($enter); $ctl.Add_MouseLeave($leave); $ctl.Add_Click($click)
-        if ($ctl -ne $card) { $ctl.Cursor = [System.Windows.Forms.Cursors]::Hand }
+        $ctl.Cursor = $HandCursor
+        $ctl.add_MouseEnter($script:CardEnter)
+        $ctl.add_MouseLeave($script:CardLeave)
+        $ctl.add_Click($script:CardClick)
     }
     return $card
 }
@@ -869,6 +872,14 @@ $navButtons = @()
 $tabNames = $Fixes | ForEach-Object { $_.Tab } | Select-Object -Unique
 
 function Show-Page([string]$Name) {
+    $flow = $pages[$Name]
+    if ($flow.Controls.Count -eq 0) {
+        # Cards are built the first time a page is opened, not at start-up
+        $flow.SuspendLayout()
+        $cards = foreach ($fix in $Fixes) { if ($fix.Tab -eq $Name) { New-FixCard $fix } }
+        $flow.Controls.AddRange([System.Windows.Forms.Control[]]@($cards))
+        $flow.ResumeLayout()
+    }
     foreach ($k in $pages.Keys) { $pages[$k].Visible = ($k -eq $Name) }
     $count = @($Fixes | Where-Object { $_.Tab -eq $Name }).Count
     $pageTitle.Text = "$Name  ($count)"
@@ -877,7 +888,7 @@ function Show-Page([string]$Name) {
         $b.BackColor = if ($active) { $C.Panel } else { $C.Sidebar }
         $b.Controls[0].Visible = $active                                     # accent marker
         $b.Controls[2].ForeColor = if ($active) { $C.Text } else { $C.Muted } # label
-        $b.Controls[2].Font = if ($active) { New-UiFont 10.5 'Bold' } else { New-UiFont 10.5 }
+        $b.Controls[2].Font = if ($active) { $F.NavB } else { $F.Nav }
     }
 }
 
@@ -887,7 +898,8 @@ foreach ($tabName in $tabNames) {
     $flow.AutoScroll = $true
     $flow.BackColor = $C.Bg
     $flow.Visible = $false
-    foreach ($fix in ($Fixes | Where-Object { $_.Tab -eq $tabName })) { $flow.Controls.Add((New-FixCard $fix)) }
+    # Smoother repaint while scrolling and switching pages
+    [System.Windows.Forms.Control].GetProperty('DoubleBuffered', [Reflection.BindingFlags]'NonPublic,Instance').SetValue($flow, $true, $null)
     $pages[$tabName] = $flow
     $pageHost.Controls.Add($flow)
 }
