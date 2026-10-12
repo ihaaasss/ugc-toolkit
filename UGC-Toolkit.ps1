@@ -1368,7 +1368,7 @@ $appTitle.AutoSize = $true
 $appTitle.Location = New-Object System.Drawing.Point(74, 12)
 
 $appSub = New-Object System.Windows.Forms.Label
-$appSub.Text = "TOOLKIT  $Dot  v$ToolkitVersion  $Dot  Quick fixes for Windows workstations"
+$appSub.Text = "Certified Systems Expert  $Dot  v$ToolkitVersion  $Dot  Quick fixes for Windows workstations"
 $appSub.Font = New-UiFont 9
 $appSub.ForeColor = [System.Drawing.Color]::FromArgb(210, 225, 255)
 $appSub.BackColor = [System.Drawing.Color]::Transparent
