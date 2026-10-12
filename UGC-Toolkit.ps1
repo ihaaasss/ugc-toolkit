@@ -19,7 +19,7 @@
 # ---------------------------------------------------------------------------
 $ToolkitUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/UGC-Toolkit.ps1'
 $ToolkitName    = 'Ihsan Tech Fix'
-$ToolkitVersion = '2.4'
+$ToolkitVersion = '2.5'
 $LogDir  = Join-Path $env:ProgramData 'IhsanTechFix'
 
 # Office printers for the one-click install cards. Add one line per printer.
@@ -48,17 +48,21 @@ function ConvertTo-EncodedCommand([string]$Script) {
 
 if (-not (Test-IsAdmin)) {
     if ($PSCommandPath) {
-        # Started from a saved file: relaunch the same file
-        $relaunch = "& '$PSCommandPath'"
+        $file = $PSCommandPath                     # started from a saved file
     } else {
-        # Started with irm | iex: download and run again
-        $relaunch = "irm '$ToolkitUrl' | iex"
+        # Started with irm | iex: save the script we already downloaded instead
+        # of downloading it a second time in the admin window
+        $file = Join-Path $env:TEMP 'IhsanTechFix.ps1'
+        $text = "$($MyInvocation.MyCommand.ScriptBlock)"
+        if ($text.Length -lt 1000 -or $text -notmatch 'ToolkitUrl') { $text = Invoke-RestMethod $ToolkitUrl }
+        Set-Content -Path $file -Value $text -Encoding UTF8
     }
+    # The admin console is hidden; only the toolkit window appears
     Start-Process powershell.exe -Verb RunAs -ArgumentList @(
-        '-NoProfile', '-ExecutionPolicy', 'Bypass',
-        '-EncodedCommand', (ConvertTo-EncodedCommand $relaunch))
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$file`"")
     return
 }
+
 
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 Add-Type -AssemblyName System.Windows.Forms
@@ -567,8 +571,9 @@ $C = @{
 
 # Icon font: Segoe Fluent Icons on Windows 11, Segoe MDL2 Assets on Windows 10
 $IconFontName = 'Segoe MDL2 Assets'
-$installed = (New-Object System.Drawing.Text.InstalledFontCollection).Families.Name
-if ($installed -contains 'Segoe Fluent Icons') { $IconFontName = 'Segoe Fluent Icons' }
+$probe = New-Object System.Drawing.Font('Segoe Fluent Icons', 10)
+if ($probe.Name -eq 'Segoe Fluent Icons') { $IconFontName = 'Segoe Fluent Icons' }
+$probe.Dispose()
 function New-IconFont([float]$Size) { New-Object System.Drawing.Font($IconFontName, $Size) }
 function New-UiFont([float]$Size, [string]$Style = 'Regular') {
     New-Object System.Drawing.Font('Segoe UI', $Size, [System.Drawing.FontStyle]$Style)
@@ -643,10 +648,15 @@ function Add-Output([string]$Text, [System.Drawing.Color]$Color = $C.Text) {
 }
 
 $script:RunningJobs = @{}
+# Background tasks run in an in-process runspace pool: starts in milliseconds
+# instead of the 1-2 seconds a new PowerShell process (Start-Job) needs.
+$script:Pool = [runspacefactory]::CreateRunspacePool(1, 4)
+$script:Pool.ApartmentState = 'MTA'
+$script:Pool.Open()
 
 function Update-Status {
     if ($script:RunningJobs.Count) {
-        $script:StatusLabel.Text = 'Running: ' + ($script:RunningJobs.Values -join ', ')
+        $script:StatusLabel.Text = 'Running: ' + (($script:RunningJobs.Values | ForEach-Object { $_.Name }) -join ', ')
         $script:Busy.Visible = $true
     } else {
         $script:StatusLabel.Text = "Ready  $Dot  Click a card to run it  $Dot  Orange cards ask before changing anything"
@@ -675,8 +685,14 @@ function Invoke-Fix($Fix) {
             '-EncodedCommand', (ConvertTo-EncodedCommand ($title + $body)))
         Add-Output '  Opened in a separate window so you can follow the progress.' $C.Muted
     } else {
-        $job = Start-Job -ScriptBlock $Fix.Script -InitializationScript ([scriptblock]::Create($Prelude))
-        $script:RunningJobs[$job.Id] = $Fix.Name
+        $ps = [powershell]::Create()
+        $ps.RunspacePool = $script:Pool
+        # A runspace has no console, so Out-String needs an explicit width
+        $setup = "`$PSDefaultParameterValues['Out-String:Width'] = 220`n"
+        [void]$ps.AddScript($setup + $Prelude + "`n" + $Fix.Script.ToString() + "`n")
+        [void]$ps.AddCommand('Out-String').AddParameter('Width', 220)
+        $handle = $ps.BeginInvoke()
+        $script:RunningJobs[[guid]::NewGuid().ToString()] = @{ Name = $Fix.Name; PS = $ps; Handle = $handle }
         Update-Status
     }
 }
@@ -790,12 +806,14 @@ $appSub.AutoSize = $true
 $appSub.Location = New-Object System.Drawing.Point(78, 52)
 
 # Machine info on the right of the header
-$os   = Get-CimInstance Win32_OperatingSystem
+$nt    = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+$osName = if ([int]$nt.CurrentBuildNumber -ge 22000) { 'Windows 11' } else { 'Windows 10' }
+$osName = "$osName $($nt.DisplayVersion)  (build $($nt.CurrentBuildNumber))"
 $cDrv = Get-PSDrive C
 $freePct = [math]::Round(100 * $cDrv.Free / ($cDrv.Used + $cDrv.Free))
 $sysInfo = New-Object System.Windows.Forms.Label
 $sysInfo.Text = "$env:COMPUTERNAME   $Dot   $env:USERNAME`n" +
-                ($os.Caption -replace 'Microsoft ', '') + "   $Dot   C: $([math]::Round($cDrv.Free/1GB,1)) GB free ($freePct%)"
+                $osName + "   $Dot   C: $([math]::Round($cDrv.Free/1GB,1)) GB free ($freePct%)"
 $sysInfo.Font = New-UiFont 9
 $sysInfo.ForeColor = [System.Drawing.Color]::White
 $sysInfo.BackColor = [System.Drawing.Color]::Transparent
@@ -995,21 +1013,28 @@ $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 400
 $timer.Add_Tick({
     foreach ($id in @($script:RunningJobs.Keys)) {
-        $job = Get-Job -Id $id -ErrorAction SilentlyContinue
-        if ($job -and $job.State -ne 'Running') {
-            $name = $script:RunningJobs[$id]
-            $out  = Receive-Job $job -ErrorAction SilentlyContinue -ErrorVariable errs 2>&1 | Out-String -Width 220
-            if ($out.Trim()) { Add-Output $out }
-            if ($errs) { Add-Output ($errs | Out-String) $C.Err }
-            if ($job.State -eq 'Completed') {
-                Add-Output "$Tick $name finished" $C.Ok; Write-ToolkitLog "DONE $name"
-            } else {
-                Add-Output "$Cross $name $($job.State)" $C.Err; Write-ToolkitLog "$($job.State) $name"
-            }
-            Remove-Job $job -Force
-            $script:RunningJobs.Remove($id)
-            Update-Status
+        $t = $script:RunningJobs[$id]
+        if (-not $t.Handle.IsCompleted) { continue }
+        $name = $t.Name
+        $failed = $false
+        try {
+            $out = ($t.PS.EndInvoke($t.Handle) | Out-String).Trim()
+            if ($out) { Add-Output $out }
+        } catch {
+            $failed = $true
+            $ex = $_.Exception; if ($ex.InnerException) { $ex = $ex.InnerException }; Add-Output $ex.Message $C.Err
         }
+        if ($t.PS.Streams.Error.Count) {
+            Add-Output (($t.PS.Streams.Error | ForEach-Object { $_.ToString() }) -join "`r`n") $C.Err
+        }
+        if ($failed -or ($t.PS.HadErrors -and -not $out)) {
+            Add-Output "$Cross $name failed" $C.Err; Write-ToolkitLog "FAILED $name"
+        } else {
+            Add-Output "$Tick $name finished" $C.Ok; Write-ToolkitLog "DONE $name"
+        }
+        $t.PS.Dispose()
+        $script:RunningJobs.Remove($id)
+        Update-Status
     }
 })
 
@@ -1028,4 +1053,4 @@ Write-ToolkitLog 'Toolkit opened'
 
 [void]$form.ShowDialog()
 $timer.Stop()
-Get-Job | Remove-Job -Force -ErrorAction SilentlyContinue
+$script:Pool.Close()
