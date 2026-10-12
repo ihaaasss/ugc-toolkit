@@ -19,7 +19,7 @@
 # ---------------------------------------------------------------------------
 $ToolkitUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/UGC-Toolkit.ps1'
 $ToolkitName    = 'Ihsan Tech Fix'
-$ToolkitVersion = '2.9'
+$ToolkitVersion = '3.0'
 $LogDir  = Join-Path $env:ProgramData 'IhsanTechFix'
 
 # Software for the one-click install cards (winget package IDs).
@@ -35,6 +35,10 @@ $SoftwareCatalog = @(
     @{ Name='Notepad++';             Id='Notepad++.Notepad++';            Scope='machine'; Icon=0xE70F }
     @{ Name='VLC media player';      Id='VideoLAN.VLC';                   Scope='machine'; Icon=0xE714 }
 )
+
+# "My Scripts" tab: every .bat / .cmd / .ps1 file in the repo's scripts folder
+# becomes a button automatically. Nothing in this file needs editing.
+$ScriptsApi = 'https://api.github.com/repos/ihaaasss/ugc-toolkit/contents/scripts'
 
 # Startup PIN. Only the SHA-256 hash is stored here, not the PIN itself.
 # To change the PIN, run this and paste the result below:
@@ -695,6 +699,7 @@ $PageIcons = @{
     'Outlook & Office'  = 0xE715
     'Printers'          = 0xE749
     'Software'          = 0xE719
+    'My Scripts'        = 0xE756
     'Info'              = 0xE946
 }
 $FixIcons = @{
@@ -954,9 +959,53 @@ $pageTitle.ForeColor = $C.Text
 
 $pages = @{}
 $navButtons = @()
-$tabNames = $Fixes | ForEach-Object { $_.Tab } | Select-Object -Unique
+$tabNames = @($Fixes | ForEach-Object { $_.Tab } | Select-Object -Unique) + 'My Scripts'
+
+# Reads the scripts folder from GitHub and adds one card per script.
+# The first comment line of a script (REM ..., :: ... or # ...) becomes its description.
+function Import-RepoScripts {
+    if ($script:RepoScriptsLoaded) { return }
+    $script:RepoScriptsLoaded = $true
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $items = Invoke-RestMethod -Uri $ScriptsApi -TimeoutSec 8 -Headers @{ 'User-Agent' = 'IhsanTechFix' }
+    } catch {
+        Add-Output "Could not read the scripts folder from GitHub: $($_.Exception.Message)" $C.Err
+        return
+    }
+    foreach ($it in ($items | Where-Object { $_.type -eq 'file' -and $_.name -match '\.(bat|cmd|ps1)$' } | Sort-Object name)) {
+        $url  = $it.download_url
+        $ext  = [IO.Path]::GetExtension($it.name).ToLower()
+        $nice = ([IO.Path]::GetFileNameWithoutExtension($it.name) -replace '[-_]', ' ')
+        $help = "Runs $($it.name) from the repo's scripts folder."
+        try {
+            $first = ((Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 8).Content -split "`n" |
+                      Where-Object { $_ -match '^\s*(REM|::|#)\s*\S' -and $_ -notmatch '^\s*#!' -and $_ -notmatch '@echo' } |
+                      Select-Object -First 1)
+            if ($first) { $help = ($first -replace '^\s*(REM|::|#)\s*', '').Trim() }
+        } catch { }
+        $code = @"
+`$dir = Join-Path `$env:TEMP 'IhsanTechFix_scripts'
+New-Item `$dir -ItemType Directory -Force | Out-Null
+`$file = Join-Path `$dir '$($it.name)'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+`$text = (Invoke-WebRequest -Uri '$url' -UseBasicParsing).Content
+[IO.File]::WriteAllText(`$file, (`$text -replace "``r?``n", "``r``n"), [Text.Encoding]::Default)
+Write-Host "Running $($it.name)..." -ForegroundColor Cyan
+if ('$ext' -eq '.ps1') { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File `$file }
+else { & cmd.exe /c `$file }
+Write-Host "Exit code: `$LASTEXITCODE"
+"@
+        $script:Fixes += @{ Tab='My Scripts'; Name=$nice; Mode='Window'; Confirm=$true; Icon=0xE756
+                            Help=$help; Script=[scriptblock]::Create($code) }
+    }
+    if (-not ($script:Fixes | Where-Object { $_.Tab -eq 'My Scripts' })) {
+        Add-Output 'No scripts found. Add .bat, .cmd or .ps1 files to the scripts folder in the GitHub repo.' $C.Muted
+    }
+}
 
 function Show-Page([string]$Name) {
+    if ($Name -eq 'My Scripts') { Import-RepoScripts }
     $flow = $pages[$Name]
     if ($flow.Controls.Count -eq 0) {
         # Cards are built the first time a page is opened, not at start-up
