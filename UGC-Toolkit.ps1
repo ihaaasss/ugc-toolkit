@@ -19,8 +19,13 @@
 # ---------------------------------------------------------------------------
 $ToolkitUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/UGC-Toolkit.ps1'
 $ToolkitName    = 'Ihsan Tech Fix'
-$ToolkitVersion = '2.5'
+$ToolkitVersion = '2.6'
 $LogDir  = Join-Path $env:ProgramData 'IhsanTechFix'
+
+# Startup PIN. Only the SHA-256 hash is stored here, not the PIN itself.
+# To change the PIN, run this and paste the result below:
+#   $p='NEWPIN'; -join ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($p)) | % { $_.ToString('x2') })
+$PinHash = '1df015d06e08a06891c2d12ae7fc8d5050f6f7984b639aa9de19fc1f0195c15f'
 
 # Office printers for the one-click install cards. Add one line per printer.
 #   Driver = the exact driver name inside the .inf file
@@ -46,6 +51,25 @@ function ConvertTo-EncodedCommand([string]$Script) {
     [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script))
 }
 
+# ---------------------------------------------------------------------------
+# PIN CHECK - asked once, before the toolkit opens (3 attempts)
+# ---------------------------------------------------------------------------
+function Test-Pin([string]$Pin) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $hex = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Pin)) | ForEach-Object { $_.ToString('x2') })
+    $hex -eq $PinHash
+}
+if ($args -notcontains '-Unlocked') {
+    $ok = $false
+    for ($i = 1; $i -le 3 -and -not $ok; $i++) {
+        $sec = Read-Host -Prompt "Ihsan Tech Fix - enter PIN" -AsSecureString
+        $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
+        $ok = Test-Pin $plain
+        if (-not $ok) { Write-Host ("Wrong PIN. {0} attempt(s) left." -f (3 - $i)) -ForegroundColor Red }
+    }
+    if (-not $ok) { Write-Host 'Access denied.' -ForegroundColor Red; return }
+}
+
 if (-not (Test-IsAdmin)) {
     if ($PSCommandPath) {
         $file = $PSCommandPath                     # started from a saved file
@@ -59,7 +83,7 @@ if (-not (Test-IsAdmin)) {
     }
     # The admin console is hidden; only the toolkit window appears
     Start-Process powershell.exe -Verb RunAs -ArgumentList @(
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$file`"")
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$file`"", '-Unlocked')
     return
 }
 
