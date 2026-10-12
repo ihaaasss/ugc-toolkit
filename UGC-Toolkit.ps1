@@ -19,7 +19,7 @@
 # ---------------------------------------------------------------------------
 $ToolkitUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/UGC-Toolkit.ps1'
 $ToolkitName    = 'Ihsan Tech Fix'
-$ToolkitVersion = '2.8'
+$ToolkitVersion = '2.9'
 $LogDir  = Join-Path $env:ProgramData 'IhsanTechFix'
 
 # Software for the one-click install cards (winget package IDs).
@@ -28,7 +28,6 @@ $LogDir  = Join-Path $env:ProgramData 'IhsanTechFix'
 $SoftwareCatalog = @(
     @{ Name='Asana';                 Id='Asana.Asana';                    Scope='user';    Icon=0xE9D5 }
     @{ Name='Google Chrome';         Id='Google.Chrome';                  Scope='machine'; Icon=0xE774 }
-    @{ Name='Microsoft Teams';       Id='Microsoft.Teams';                Scope='machine'; Icon=0xE716 }
     @{ Name='Zoom';                  Id='Zoom.Zoom';                      Scope='machine'; Icon=0xE714 }
     @{ Name='AnyDesk';               Id='AnyDesk.AnyDesk';                Scope='machine'; Icon=0xE7F4 }
     @{ Name='Adobe Acrobat Reader';  Id='Adobe.Acrobat.Reader.64-bit';    Scope='machine'; Icon=0xEA90 }
