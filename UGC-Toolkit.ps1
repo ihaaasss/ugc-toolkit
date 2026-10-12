@@ -19,8 +19,23 @@
 # ---------------------------------------------------------------------------
 $ToolkitUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/UGC-Toolkit.ps1'
 $ToolkitName    = 'Ihsan Tech Fix'
-$ToolkitVersion = '2.7'
+$ToolkitVersion = '2.8'
 $LogDir  = Join-Path $env:ProgramData 'IhsanTechFix'
+
+# Software for the one-click install cards (winget package IDs).
+#   Scope 'machine' = installed for everyone (needs admin)
+#   Scope 'user'    = installed into the signed-in user's profile (Asana, etc.)
+$SoftwareCatalog = @(
+    @{ Name='Asana';                 Id='Asana.Asana';                    Scope='user';    Icon=0xE9D5 }
+    @{ Name='Google Chrome';         Id='Google.Chrome';                  Scope='machine'; Icon=0xE774 }
+    @{ Name='Microsoft Teams';       Id='Microsoft.Teams';                Scope='machine'; Icon=0xE716 }
+    @{ Name='Zoom';                  Id='Zoom.Zoom';                      Scope='machine'; Icon=0xE714 }
+    @{ Name='AnyDesk';               Id='AnyDesk.AnyDesk';                Scope='machine'; Icon=0xE7F4 }
+    @{ Name='Adobe Acrobat Reader';  Id='Adobe.Acrobat.Reader.64-bit';    Scope='machine'; Icon=0xEA90 }
+    @{ Name='7-Zip';                 Id='7zip.7zip';                      Scope='machine'; Icon=0xE8B7 }
+    @{ Name='Notepad++';             Id='Notepad++.Notepad++';            Scope='machine'; Icon=0xE70F }
+    @{ Name='VLC media player';      Id='VideoLAN.VLC';                   Scope='machine'; Icon=0xE714 }
+)
 
 # Startup PIN. Only the SHA-256 hash is stored here, not the PIN itself.
 # To change the PIN, run this and paste the result below:
@@ -129,6 +144,59 @@ function Start-AsLoggedOnUser([string]$Program, [string]$Arguments = '') {
     Start-ScheduledTask -TaskName $task
     Start-Sleep 3
     Unregister-ScheduledTask -TaskName $task -Confirm:$false
+}
+
+function Get-WingetPath {
+    $cmd = Get-Command winget.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    # Admin accounts often lack the winget alias - use the App Installer folder directly
+    $found = Get-ChildItem "$env:ProgramFiles\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe" -ErrorAction SilentlyContinue |
+             Sort-Object FullName -Descending | Select-Object -First 1
+    if ($found) { return $found.FullName }
+    $null
+}
+
+function Install-App([string]$Name, [string]$Id, [string]$Scope = 'machine') {
+    Write-Host "Installing $Name ($Id)..." -ForegroundColor Cyan
+    $common = @('install', '--id', $Id, '-e', '--silent', '--accept-package-agreements', '--accept-source-agreements')
+    $u  = Get-LoggedOnUser
+    $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+
+    if ($Scope -eq 'user' -and $u -and $u.Sid -ne $me) {
+        # Per-user app, and the toolkit runs as a different admin account:
+        # run winget inside the signed-in user's session so it lands in THEIR profile
+        Write-Host "Installing into $($u.Name)'s profile..." -ForegroundColor Cyan
+        $log = Join-Path $u.ProfilePath "AppData\Local\Temp\IhsanTechFix_$($Id -replace '\W','_').log"
+        $cmd = "winget $($common -join ' ') --scope user *> `"$log`"; exit `$LASTEXITCODE"
+        $task = 'IhsanTechFix_Install'
+        $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -Command $cmd"
+        $principal = New-ScheduledTaskPrincipal -UserId $u.Name -LogonType Interactive
+        Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Force | Out-Null
+        Start-ScheduledTask -TaskName $task
+        $deadline = (Get-Date).AddMinutes(15)
+        Start-Sleep 3
+        while ((Get-ScheduledTask -TaskName $task).State -eq 'Running' -and (Get-Date) -lt $deadline) {
+            Write-Host '.' -NoNewline; Start-Sleep 3
+        }
+        Write-Host ''
+        $result = (Get-ScheduledTaskInfo -TaskName $task).LastTaskResult
+        Unregister-ScheduledTask -TaskName $task -Confirm:$false
+        if (Test-Path $log) { Get-Content $log | Where-Object { $_ -match '\w' -and $_ -notmatch '^[\s\-\\|/]+$' } | Select-Object -Last 8 }
+        if ($result -eq 0) { Write-Host "$Name installed for $($u.Name)." -ForegroundColor Green }
+        else { Write-Host "winget finished with code $result. If it says 'already installed', nothing more is needed." -ForegroundColor Yellow }
+        return
+    }
+
+    $winget = Get-WingetPath
+    if (-not $winget) { Write-Host 'winget (App Installer) is not available on this PC. Install "App Installer" from the Microsoft Store.' -ForegroundColor Red; return }
+    $args2 = $common + @('--scope', $Scope)
+    & $winget @args2
+    if ($LASTEXITCODE -ne 0 -and $Scope -eq 'machine') {
+        Write-Host 'Retrying without a fixed scope...' -ForegroundColor Yellow
+        & $winget @common
+    }
+    if ($LASTEXITCODE -eq 0) { Write-Host "$Name installed." -ForegroundColor Green }
+    else { Write-Host "winget finished with code $LASTEXITCODE. If it says 'already installed', nothing more is needed." -ForegroundColor Yellow }
 }
 
 function Install-NetworkPrinter([string]$Name, [string]$IP, [string]$Driver, [string[]]$Source) {
@@ -565,6 +633,23 @@ $Fixes = @(
                   Format-Table -AutoSize -Wrap | Out-String -Width 220 } }
 )
 
+# One "Install" card for every app in $SoftwareCatalog
+foreach ($app in $SoftwareCatalog) {
+    $code = "Install-App -Name '{0}' -Id '{1}' -Scope '{2}'" -f $app.Name, $app.Id, $app.Scope
+    $who  = if ($app.Scope -eq 'user') { 'for the signed-in user' } else { 'for all users' }
+    $Fixes += @{ Tab='Software'; Name="Install $($app.Name)"; Mode='Window'; Icon=$app.Icon
+                 Help="Silent install of the latest $($app.Name) $who (winget: $($app.Id))."
+                 Script=[scriptblock]::Create($code) }
+}
+$Fixes += @{ Tab='Software'; Name='Update all apps'; Mode='Window'; Icon=0xE895
+             Help='Updates every app that winget can update (Chrome, Zoom, 7-Zip, Reader, ...).'
+             Script={ $w = Get-WingetPath; if (-not $w) { 'winget not available.'; return }
+                      & $w upgrade --all --silent --accept-package-agreements --accept-source-agreements --include-unknown } }
+$Fixes += @{ Tab='Software'; Name='List apps with updates'; Mode='Inline'; Icon=0xE8FD
+             Help='Shows installed apps that have a newer version available.'
+             Script={ $w = Get-WingetPath; if (-not $w) { 'winget not available.'; return }
+                      & $w upgrade --accept-source-agreements | Out-String -Width 200 } }
+
 # One "Install" card for every printer in $PrinterCatalog
 foreach ($pr in $PrinterCatalog) {
     $sources = (@($pr.Source) | ForEach-Object { "'" + ($_ -replace "'", "''") + "'" }) -join ','
@@ -610,6 +695,7 @@ $PageIcons = @{
     'Network'           = 0xE968
     'Outlook & Office'  = 0xE715
     'Printers'          = 0xE749
+    'Software'          = 0xE719
     'Info'              = 0xE946
 }
 $FixIcons = @{
