@@ -1,4 +1,5 @@
 # One button per line on the Downloads page:   Name | https://url | optional description
 # Lines starting with # are ignored. Replace the examples with your own links.
-Microsoft 365 Portal | https://www.office.com | Office web apps, Outlook on the web and OneDrive
 Ultraction Website | https://www.ultraction.ae | Company website
+Foxit | https://getintopc.com/softwares/pdf-editors/foxit-pdf-editor-pro-2026-free-download/ | PDF Editor
+Autocad 2025 | https://getintopc.com/softwares/3d-cad/autodesk-autocad-2025-free-download/ | 2025 with fix
