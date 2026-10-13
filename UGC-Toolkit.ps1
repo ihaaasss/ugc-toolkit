@@ -1,5 +1,5 @@
 <#
-    Ihsan Tech Fix - Toolkit
+    Trouble Ticket - Toolkit
     ------------------------
     A point-and-click menu of common Windows fixes.
 
@@ -18,7 +18,7 @@
 # 1. SETTINGS
 # ---------------------------------------------------------------------------
 $ToolkitUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/UGC-Toolkit.ps1'
-$ToolkitName    = 'Ihsan Tech Fix'
+$ToolkitName    = 'Trouble Ticket'
 $ToolkitVersion = '3.9'
 $LogDir  = Join-Path $env:ProgramData 'IhsanTechFix'
 
@@ -85,7 +85,7 @@ function Test-Pin([string]$Pin) {
 if ($args -notcontains '-Unlocked') {
     $ok = $false
     for ($i = 1; $i -le 3 -and -not $ok; $i++) {
-        $sec = Read-Host -Prompt "Ihsan Tech Fix - enter PIN" -AsSecureString
+        $sec = Read-Host -Prompt "$ToolkitName - enter PIN" -AsSecureString
         $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
         $ok = Test-Pin $plain
         if (-not $ok) { Write-Host ("Wrong PIN. {0} attempt(s) left." -f (3 - $i)) -ForegroundColor Red }
@@ -735,7 +735,7 @@ $Fixes = @(
            $imgSrc = [Uri]::EscapeDataString("$sigName`_files") + '/image001.jpg'
            $html = @"
 <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
-<head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="Generator" content="Ihsan Tech Fix">
+<head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="Generator" content="Trouble Ticket">
 <style>p.UgcSig{margin:0in;line-height:115%;$font;}</style></head>
 <body lang="EN-US"><div>
 <p class="UgcSig"><b><span style="font-size:12pt;$font;color:$Main">$(& $h $name)</span></b></p>
