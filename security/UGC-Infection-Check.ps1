@@ -33,7 +33,12 @@ $Since  = (Get-Date).AddDays(-$Days)
 $script:Flags = 0
 
 function W([string]$t = '') { Add-Content -Path $Report -Value $t; Write-Host $t }
-function Flag([string]$t)   { $script:Flags++; W "  !! $t" }
+$script:Findings = @()
+function Flag([string]$t, [string]$Kind = 'Info', [string]$Target = '', [string]$File = '') {
+    $script:Flags++; W "  !! $t"
+    # Machine-readable copy for UGC-Infection-Cleanup.ps1
+    $script:Findings += [pscustomobject]@{ Kind = $Kind; Detail = (($t -replace '\s+', ' ').Trim()); Target = $Target; File = $File }
+}
 function Head([string]$t)   { W ''; W ('=' * 90); W "  $t"; W ('=' * 90) }
 
 # Folders a normal program never runs from
@@ -88,13 +93,13 @@ foreach ($f in $found) {
     if ($arcExt -contains $ext) { W "     $line" ; continue }
     if ($ext -in '.exe','.dll','.scr','.com','.cpl','.msi') {
         $sig = Get-SigStatus $f.FullName
-        if ($sig -like 'UNSIGNED*') { Flag "$line   [$sig]" } else { W "     $line   [$sig]" }
+        if ($sig -like 'UNSIGNED*') { Flag "$line   [$sig]" 'File' $f.FullName $f.FullName } else { W "     $line   [$sig]" }
     } elseif ($ext -eq '.lnk') {
         $t = (New-Object -ComObject WScript.Shell).CreateShortcut($f.FullName)
         $tl = "$($t.TargetPath) $($t.Arguments)"
-        if ($tl -match $ScriptHosts -and $tl -match $BadCmd) { Flag "$line   -> $tl" }
+        if ($tl -match $ScriptHosts -and $tl -match $BadCmd) { Flag "$line   -> $tl" 'File' $f.FullName $f.FullName }
     } else {
-        Flag $line    # scripts / disk images in user folders are always worth a look
+        Flag $line 'File' $f.FullName $f.FullName    # scripts / disk images in user folders are always worth a look
     }
 }
 
@@ -114,7 +119,7 @@ foreach ($k in $runKeys) {
         $exe  = Get-ExePath $cmd
         $line = "$($k -replace 'Registry::','')  |  $($pr.Name) = $cmd"
         if ($cmd -match $UserWritable -or ($cmd -match $ScriptHosts -and $cmd -match $BadCmd) -or (Get-SigStatus $exe) -like 'UNSIGNED*') {
-            Flag "$line   [$(Get-SigStatus $exe)]"
+            Flag "$line   [$(Get-SigStatus $exe)]" 'RunValue' "$k|$($pr.Name)" $exe
         } else { W "     $line" }
     }
 }
@@ -123,7 +128,7 @@ $startupDirs = @('C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp')
 foreach ($d in $startupDirs | Where-Object { Test-Path $_ }) {
     foreach ($f in Get-ChildItem $d -File -Force | Where-Object { $_.Name -ne 'desktop.ini' }) {
         $line = "Startup folder: $($f.FullName)  ($($f.LastWriteTime.ToString('yyyy-MM-dd')))"
-        if ($f.LastWriteTime -ge $Since -or $f.Extension -match '\.(js|vbs|hta|bat|cmd|ps1|exe)$') { Flag $line } else { W "     $line" }
+        if ($f.LastWriteTime -ge $Since -or $f.Extension -match '\.(js|vbs|hta|bat|cmd|ps1|exe)$') { Flag $line 'File' $f.FullName $f.FullName } else { W "     $line" }
     }
 }
 $wl = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
@@ -138,14 +143,14 @@ foreach ($t in Get-ScheduledTask | Where-Object { $_.TaskPath -notlike '\Microso
         if (-not $cmd) { continue }
         if ($t.TaskName -like 'UGC Archive Guard*' -or $t.TaskName -like 'IhsanTechFix*') { continue }
         $line = "Task $($t.TaskPath)$($t.TaskName)  ->  $cmd"
-        if ($cmd -match $UserWritable -or ($cmd -match $ScriptHosts -and $cmd -match $BadCmd)) { Flag $line }
+        if ($cmd -match $UserWritable -or ($cmd -match $ScriptHosts -and $cmd -match $BadCmd)) { Flag $line 'Task' "$($t.TaskPath)|$($t.TaskName)" (Get-ExePath $a.Execute) }
         elseif ($t.Date -and ([datetime]$t.Date) -ge $Since) { W "  ?  (new) $line" }
     }
 }
 foreach ($s in Get-CimInstance Win32_Service) {
     $path = [string]$s.PathName
     if ($path -match $UserWritable -or ($path -match $ScriptHosts -and $path -match $BadCmd)) {
-        Flag "Service $($s.Name) [$($s.State)/$($s.StartMode)]  ->  $path"
+        Flag "Service $($s.Name) [$($s.State)/$($s.StartMode)]  ->  $path" 'Service' $s.Name (Get-ExePath $path)
     }
 }
 
@@ -162,7 +167,7 @@ foreach ($pr in Get-CimInstance Win32_Process) {
     $owner = (Invoke-CimMethod -InputObject $pr -MethodName GetOwner).User
     $line = "PID $($pr.ProcessId) [$owner] $path   [$sig]"
     if ($badLine -or ($path -match $UserWritable -and $sig -like 'UNSIGNED*')) {
-        Flag "$line`n       cmd: $cl"; $suspectPids += $pr.ProcessId
+        Flag "$line`n       cmd: $cl" 'Process' $pr.ProcessId $path; $suspectPids += $pr.ProcessId
     } elseif ($path -match $UserWritable) {
         W "  ?  $line"; $suspectPids += $pr.ProcessId
     }
@@ -176,7 +181,7 @@ $hits = $conns | Where-Object { $suspectPids -contains $_.OwningProcess }
 if (-not $hits) { W '  (none from flagged processes)' }
 foreach ($c in $hits) {
     $pn = (Get-Process -Id $c.OwningProcess).ProcessName
-    Flag "$pn (PID $($c.OwningProcess)) -> $($c.RemoteAddress):$($c.RemotePort)"
+    Flag "$pn (PID $($c.OwningProcess)) -> $($c.RemoteAddress):$($c.RemotePort)" 'Process' $c.OwningProcess ((Get-Process -Id $c.OwningProcess).Path)
 }
 
 # ------------------------------------------------------------------ 6. defender & accounts
@@ -202,26 +207,28 @@ $rat = 'anydesk|teamviewer|screenconnect|connectwise|rustdesk|netsupport|client3
        'ammyy|supremo|radmin|logmein|simplehelp|meshagent|tacticalrmm|remoteutilities|rutserv|rfusclient|zohoassist|getscreen|dwagent|aeroadmin|hoptodesk|parsec'
 $ratHits = @()
 foreach ($pr in Get-CimInstance Win32_Process | Where-Object { "$($_.Name) $($_.ExecutablePath)" -match $rat }) {
-    $ratHits += "RUNNING  $($pr.Name)  (PID $($pr.ProcessId))  $($pr.ExecutablePath)   [$(Get-SigStatus $pr.ExecutablePath)]"
+    $ratHits += @{ T = "RUNNING  $($pr.Name)  (PID $($pr.ProcessId))  $($pr.ExecutablePath)   [$(Get-SigStatus $pr.ExecutablePath)]"; K = 'Process'; G = "$($pr.ProcessId)"; F = $pr.ExecutablePath }
 }
 foreach ($s in Get-CimInstance Win32_Service | Where-Object { "$($_.Name) $($_.DisplayName) $($_.PathName)" -match $rat }) {
-    $ratHits += "SERVICE  $($s.DisplayName) [$($s.State)/$($s.StartMode)]  $($s.PathName)"
+    $ratHits += @{ T = "SERVICE  $($s.DisplayName) [$($s.State)/$($s.StartMode)]  $($s.PathName)"; K = 'Service'; G = $s.Name; F = (Get-ExePath $s.PathName) }
 }
 $uninst = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
 foreach ($sid in Get-ChildItem 'Registry::HKEY_USERS' | Where-Object { $_.PSChildName -match '^S-1-5-21-[\d-]+$' }) {
     $uninst += "Registry::HKEY_USERS\$($sid.PSChildName)\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
 }
 foreach ($app in Get-ItemProperty $uninst | Where-Object { $_.DisplayName -match $rat }) {
-    $ratHits += "INSTALLED  $($app.DisplayName) $($app.DisplayVersion)  (install date: $($app.InstallDate))"
+    $un = if ($app.QuietUninstallString) { $app.QuietUninstallString } else { $app.UninstallString }
+    $ratHits += @{ T = "INSTALLED  $($app.DisplayName) $($app.DisplayVersion)  (install date: $($app.InstallDate))"; K = 'Uninstall'; G = "$un"; F = '' }
 }
 foreach ($u in Get-ChildItem 'C:\Users' -Directory -Force) {
     foreach ($f in Get-ChildItem (Join-Path $u.FullName 'Downloads'),(Join-Path $u.FullName 'AppData') -Recurse -File -Force -Include *.exe |
                    Where-Object { $_.Name -match $rat }) {
-        $ratHits += "FILE  $($f.FullName)  ($($f.LastWriteTime.ToString('yyyy-MM-dd HH:mm')))"
+        $ratHits += @{ T = "FILE  $($f.FullName)  ($($f.LastWriteTime.ToString('yyyy-MM-dd HH:mm')))"; K = 'File'; G = $f.FullName; F = $f.FullName }
     }
 }
 if ($ratHits) {
-    foreach ($h in $ratHits | Sort-Object -Unique) { Flag "$h" }
+    $done = @{}
+    foreach ($h in $ratHits) { if ($done[$h.T]) { continue }; $done[$h.T] = 1; Flag $h.T $h.K $h.G $h.F }
     W '     -> If IT did not install these, remove them and treat the PC as compromised.'
 } else { W '  (none found)' }
 
@@ -239,7 +246,7 @@ foreach ($sid in Get-ChildItem 'Registry::HKEY_USERS' | Where-Object { $_.PSChil
             $when = [datetime]::FromFileTime([int64]$v.LastUsedTimeStart)
             $app  = $k.PSChildName -replace '#', '\'
             $line = '{0,-12} last used {1:yyyy-MM-dd HH:mm}  by  {2}   ({3})' -f $cap, $when, $app, $user
-            if ($app -match $UserWritable -or ($app -notmatch $known -and $when -ge $Since)) { Flag $line } else { W "     $line" }
+            if ($app -match $UserWritable -or ($app -notmatch $known -and $when -ge $Since)) { Flag $line 'File' $app $app } else { W "     $line" }
         }
     }
 }
@@ -254,4 +261,7 @@ if ($script:Flags -eq 0) {
 }
 W ''
 W "Report saved: $Report"
+$Json = $Report -replace '\.txt$', '.json'
+ConvertTo-Json -InputObject @($script:Findings) -Depth 3 | Set-Content -Path $Json -Encoding UTF8
+W "Findings for Security 8 Cleanup: $Json"
 Start-Process notepad.exe $Report
