@@ -49,7 +49,7 @@ $UserWritable = '\\Users\\[^\\]+\\(AppData|Downloads|Desktop|Documents|Music|Pic
 $ScriptHosts  = 'mshta|wscript|cscript|rundll32|regsvr32|powershell|pwsh|cmd\.exe|certutil|bitsadmin|msiexec'
 # Known-good tool/app folders that would otherwise flood the report
 $Noise        = '\\node_modules\\|\\npm-cache\\|\\Mozilla\\Firefox\\|\\OpenAI\\Codex\\|\\Claude-Data\\|\\IhsanTechFix|\\\.vscode\\|\\pip\\|\\Python\d*\\|' +
-                '\\Windows Defender\\|\\DriverStore\\|\\Microsoft\\WindowsApps\\|\\NVIDIA|\\JetBrains\\|\\Docker|\\Package Cache\\'
+                '\\Windows Defender\\|\\DriverStore\\|\\Microsoft\\WindowsApps\\|\\NVIDIA|\\JetBrains\\|\\Docker|\\Package Cache\\|\\\.?venv\\|\\site-packages\\'
 # Malware loves Windows-sounding names in user folders (e.g. AppData\Local\Updates\WindowsService.exe)
 $FakeName     = '^(windows|microsoft|svchost|system|winlogon|lsass|csrss|explorer|services?|update[rs]?|runtime|host|chrome|msedge|defender|security)[^\\]*\.exe$'
 $FakeFolder   = '\\AppData\\(Local|Roaming)\\(Updates?|Windows|Microsoft Windows|System|Service[s]?)\\'
@@ -66,8 +66,10 @@ function Get-SigStatus([string]$path) {
 function Test-HighRisk([string]$exe) {
     # Program in a user-writable folder that is unsigned, or pretends to be part of Windows
     if (-not $exe -or $exe -notmatch $UserWritable -or $exe -match $Noise) { return $false }
+    $sig = Get-SigStatus $exe
+    if ($sig -like 'signed:*') { return $false }          # validly signed by a publisher
     if ((Split-Path $exe -Leaf) -match $FakeName -or $exe -match $FakeFolder) { return $true }
-    return ((Get-SigStatus $exe) -like 'UNSIGNED*')
+    return ($sig -like 'UNSIGNED*')
 }
 function Get-ExePath([string]$cmd) {
     if (-not $cmd) { return $null }
@@ -202,6 +204,10 @@ foreach ($pr in Get-CimInstance Win32_Process) {
     $path = [string]$pr.ExecutablePath; $cl = [string]$pr.CommandLine
     if (-not $path) { continue }
     $standard = $path -match '^C:\\(Windows|Program Files|Program Files \(x86\))\\'
+    if ($cl -match '-e(nc|ncodedcommand)?\s+([A-Za-z0-9+/=]{16,})') {
+        try { $cl += "   [decoded: " + (([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($Matches[2]))) -replace '\s+', ' ').Substring(0, [Math]::Min(150, ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($Matches[2]))).Length)) + "]" } catch {}
+    }
+    if ($cl -match 'IhsanTechFix|Trouble Ticket|\\UGC\\ArchiveGuard|UGC-Infection|UGC-Harden|UGC-Release') { continue }   # our own UGC tools
     $badLine  = ($pr.Name -match $ScriptHosts -and $cl -match $BadCmd)
     if ($standard -and -not $badLine) { continue }
     $sig = Get-SigStatus $path
