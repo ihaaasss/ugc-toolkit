@@ -195,6 +195,7 @@ function Add-SrpRule([int]$Level, [string]$Path, [string]$Desc) {
     Set-Reg $k 'SaferFlags'  0
     Set-Reg $k 'Description' $Desc 'String'
     $script:RuleCount++
+    $script:LastSrpKey = $k
 }
 $DISALLOWED = 0
 $UNRESTRICTED = 262144
@@ -209,9 +210,10 @@ Add-SrpRule $UNRESTRICTED '%SystemRoot%\Temp\__PSScriptPolicyTest_*' 'UGC: allow
 # Whole folders: nothing executable may run from here (WhatsApp/browser downloads, ZIP extraction temp, Outlook temp)
 foreach ($f in @(
     '%USERPROFILE%\Downloads',
-    '%USERPROFILE%\AppData\Local\Temp',
     '%USERPROFILE%\AppData\Local\Microsoft\Windows\INetCache'
-)) { Add-SrpRule $DISALLOWED $f 'UGC: block execution from download/temp folder' }
+)) { Add-SrpRule $DISALLOWED $f 'UGC: block execution from download folder' }
+Add-SrpRule $DISALLOWED '%USERPROFILE%\AppData\Local\Temp' 'UGC: block execution from Temp (ZIP extraction)'
+$TempRuleKey = $script:LastSrpKey
 
 # WhatsApp Desktop stores chat downloads in its own data folder, not in Downloads.
 # It is data only (the app itself runs from Program Files\WindowsApps), so block execution there.
@@ -245,6 +247,32 @@ if ($BlockArchiveTools) {
     Log '5b. 7-Zip / WinRAR blocked'
 }
 Log "5. Software Restriction Policy applied ($script:RuleCount rules, PolicyScope=$([int][bool]$ExemptAdmins))"
+
+# ---- 5c. Self-check: SRP must NOT push PowerShell into Constrained Language Mode
+#      (that breaks Trouble Ticket and every admin script on the PC)
+function Test-PSFullLanguage {
+    try {
+        $out = & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive `
+               -Command '$ExecutionContext.SessionState.LanguageMode' 2>$null
+        return (($out | Out-String).Trim() -eq 'FullLanguage')
+    } catch { return $false }
+}
+if (Test-PSFullLanguage) {
+    Log '5c. Check OK - PowerShell still runs in FullLanguage'
+} else {
+    Log '5c. PowerShell dropped to Constrained Language - switching Temp to file-type rules'
+    if ($TempRuleKey -and (Test-Path $TempRuleKey)) { Remove-Item $TempRuleKey -Recurse -Force }
+    foreach ($e in $riskyExt) {
+        Add-SrpRule $DISALLOWED "%USERPROFILE%\AppData\Local\Temp\*.$e"   "UGC: block .$e in Temp"
+        Add-SrpRule $DISALLOWED "%USERPROFILE%\AppData\Local\Temp\*\*.$e" "UGC: block .$e in Temp subfolders"
+    }
+    if (Test-PSFullLanguage) {
+        Log '5c. Check OK - Temp now blocks risky file types only; PowerShell in FullLanguage'
+    } else {
+        Remove-Item $SRP -Recurse -Force
+        Log '5c. ERROR - PowerShell still constrained, so execution-blocking rules were REMOVED to keep this PC usable. Other protections stay on. Send hardening.log to IT.'
+    }
+}
 
 # ---- 6. Per-user settings (all existing profiles + Default user for new logins)
 Invoke-ForEachUserHive {
