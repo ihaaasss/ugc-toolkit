@@ -34,23 +34,40 @@ $script:Flags = 0
 
 function W([string]$t = '') { Add-Content -Path $Report -Value $t; Write-Host $t }
 $script:Findings = @()
-function Flag([string]$t, [string]$Kind = 'Info', [string]$Target = '', [string]$File = '') {
-    $script:Flags++; W "  !! $t"
+$script:Top = @()
+function Flag([string]$t, [string]$Kind = 'Info', [string]$Target = '', [string]$File = '', [switch]$High) {
+    $script:Flags++
+    if ($High) { W "  !!! $t"; $script:Top += $t } else { W "  !! $t" }
     # Machine-readable copy for UGC-Infection-Cleanup.ps1
-    $script:Findings += [pscustomobject]@{ Kind = $Kind; Detail = (($t -replace '\s+', ' ').Trim()); Target = $Target; File = $File }
+    $script:Findings += [pscustomobject]@{ Severity = $(if ($High) { 'HIGH' } else { 'check' }); Kind = $Kind
+                                           Detail = (($t -replace '\s+', ' ').Trim()); Target = $Target; File = $File }
 }
 function Head([string]$t)   { W ''; W ('=' * 90); W "  $t"; W ('=' * 90) }
 
 # Folders a normal program never runs from
 $UserWritable = '\\Users\\[^\\]+\\(AppData|Downloads|Desktop|Documents|Music|Pictures|Videos)\\|\\Temp\\|\\ProgramData\\|\\Users\\Public\\|\\Windows\\Temp\\'
 $ScriptHosts  = 'mshta|wscript|cscript|rundll32|regsvr32|powershell|pwsh|cmd\.exe|certutil|bitsadmin|msiexec'
+# Known-good tool/app folders that would otherwise flood the report
+$Noise        = '\\node_modules\\|\\npm-cache\\|\\Mozilla\\Firefox\\|\\OpenAI\\Codex\\|\\Claude-Data\\|\\IhsanTechFix|\\\.vscode\\|\\pip\\|\\Python\d*\\|' +
+                '\\Windows Defender\\|\\DriverStore\\|\\Microsoft\\WindowsApps\\|\\NVIDIA|\\JetBrains\\|\\Docker|\\Package Cache\\'
+# Malware loves Windows-sounding names in user folders (e.g. AppData\Local\Updates\WindowsService.exe)
+$FakeName     = '^(windows|microsoft|svchost|system|winlogon|lsass|csrss|explorer|services?|update[rs]?|runtime|host|chrome|msedge|defender|security)[^\\]*\.exe$'
+$FakeFolder   = '\\AppData\\(Local|Roaming)\\(Updates?|Windows|Microsoft Windows|System|Service[s]?)\\'
+$HotFolders   = '\\(Downloads|Desktop|Documents|Temp|Public|Start Menu)\\'
 $BadCmd       = '-enc|-encodedcommand|-w(indowstyle)?\s+h(idden)?|frombase64string|downloadstring|downloadfile|invoke-expression|\biex\b|http[s]?://|\.hta|\.js\b|\.vbs\b|javascript:'
 
 function Get-SigStatus([string]$path) {
+    if ($path -match '\\Microsoft\\WindowsApps\\') { return 'store app' }
     if (-not $path -or -not (Test-Path -LiteralPath $path)) { return 'missing' }
     $s = Get-AuthenticodeSignature -LiteralPath $path
     if ($s.Status -eq 'Valid') { return "signed: $($s.SignerCertificate.Subject -replace '^CN=([^,]+).*','$1')" }
     return "UNSIGNED ($($s.Status))"
+}
+function Test-HighRisk([string]$exe) {
+    # Program in a user-writable folder that is unsigned, or pretends to be part of Windows
+    if (-not $exe -or $exe -notmatch $UserWritable -or $exe -match $Noise) { return $false }
+    if ((Split-Path $exe -Leaf) -match $FakeName -or $exe -match $FakeFolder) { return $true }
+    return ((Get-SigStatus $exe) -like 'UNSIGNED*')
 }
 function Get-ExePath([string]$cmd) {
     if (-not $cmd) { return $null }
@@ -83,7 +100,8 @@ $roots += 'C:\ProgramData','C:\Users\Public','C:\Windows\Temp'
 $found = foreach ($r in ($roots | Where-Object { Test-Path $_ } | Sort-Object -Unique)) {
     Get-ChildItem -LiteralPath $r -File -Recurse -Force |
         Where-Object { $_.LastWriteTime -ge $Since -and (($riskyExt + $arcExt) -contains $_.Extension.ToLower()) -and
-                       $_.FullName -notmatch '\\ProgramData\\(Microsoft|Package Cache|UGC|IhsanTechFix|regid|Microsoft OneDrive)' }
+                       $_.FullName -notmatch '\\ProgramData\\(Microsoft|Package Cache|UGC|IhsanTechFix|regid|Microsoft OneDrive)' -and
+                       $_.FullName -notmatch $Noise }
 }
 $found = $found | Sort-Object LastWriteTime -Descending | Select-Object -First 300
 if (-not $found) { W '  (none)' }
@@ -93,13 +111,19 @@ foreach ($f in $found) {
     if ($arcExt -contains $ext) { W "     $line" ; continue }
     if ($ext -in '.exe','.dll','.scr','.com','.cpl','.msi') {
         $sig = Get-SigStatus $f.FullName
-        if ($sig -like 'UNSIGNED*') { Flag "$line   [$sig]" 'File' $f.FullName $f.FullName } else { W "     $line   [$sig]" }
+        $hi  = ($ext -ne '.dll') -and (Test-HighRisk $f.FullName)
+        if ($hi) { Flag "$line   [$sig]" 'File' $f.FullName $f.FullName -High }
+        elseif ($sig -like 'UNSIGNED*') { Flag "$line   [$sig]" 'File' $f.FullName $f.FullName }
+        else { W "     $line   [$sig]" }
     } elseif ($ext -eq '.lnk') {
         $t = (New-Object -ComObject WScript.Shell).CreateShortcut($f.FullName)
         $tl = "$($t.TargetPath) $($t.Arguments)"
         if ($tl -match $ScriptHosts -and $tl -match $BadCmd) { Flag "$line   -> $tl" 'File' $f.FullName $f.FullName }
     } else {
-        Flag $line 'File' $f.FullName $f.FullName    # scripts / disk images in user folders are always worth a look
+        # Scripts: apps ship thousands of .js/.ps1 - only flag them where users drop files,
+        # and always flag the types normal apps never use (.vbs/.hta/.wsf/.jse)
+        if ($ext -in '.vbs','.vbe','.jse','.wsf','.hta') { Flag $line 'File' $f.FullName $f.FullName -High }
+        elseif ($f.FullName -match $HotFolders)       { Flag $line 'File' $f.FullName $f.FullName }
     }
 }
 
@@ -118,9 +142,12 @@ foreach ($k in $runKeys) {
         $cmd  = [string]$pr.Value
         $exe  = Get-ExePath $cmd
         $line = "$($k -replace 'Registry::','')  |  $($pr.Name) = $cmd"
-        if ($cmd -match $UserWritable -or ($cmd -match $ScriptHosts -and $cmd -match $BadCmd) -or (Get-SigStatus $exe) -like 'UNSIGNED*') {
-            Flag "$line   [$(Get-SigStatus $exe)]" 'RunValue' "$k|$($pr.Name)" $exe
-        } else { W "     $line" }
+        $sig  = Get-SigStatus $exe
+        if (($cmd -match $ScriptHosts -and $cmd -match $BadCmd) -or (Test-HighRisk $exe)) {
+            Flag "$line   [$sig]" 'RunValue' "$k|$($pr.Name)" $exe -High
+        } elseif ($sig -like 'UNSIGNED*') { Flag "$line   [$sig]" 'RunValue' "$k|$($pr.Name)" $exe }
+        elseif ($exe -match $UserWritable) { W "  ?  $line   [$sig]" }
+        else { W "     $line" }
     }
 }
 $startupDirs = @('C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp') +
@@ -128,7 +155,17 @@ $startupDirs = @('C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp')
 foreach ($d in $startupDirs | Where-Object { Test-Path $_ }) {
     foreach ($f in Get-ChildItem $d -File -Force | Where-Object { $_.Name -ne 'desktop.ini' }) {
         $line = "Startup folder: $($f.FullName)  ($($f.LastWriteTime.ToString('yyyy-MM-dd')))"
-        if ($f.LastWriteTime -ge $Since -or $f.Extension -match '\.(js|vbs|hta|bat|cmd|ps1|exe)$') { Flag $line 'File' $f.FullName $f.FullName } else { W "     $line" }
+        if ($f.Extension -match '\.(js|jse|vbs|vbe|wsf|hta)$') { Flag $line 'File' $f.FullName $f.FullName -High; continue }
+        if ($f.Extension -match '\.(bat|cmd|ps1|exe)$') { Flag $line 'File' $f.FullName $f.FullName; continue }
+        if ($f.Extension -eq '.lnk') {
+            $t = (New-Object -ComObject WScript.Shell).CreateShortcut($f.FullName)
+            $tl = "$($t.TargetPath) $($t.Arguments)"
+            if (($tl -match $ScriptHosts -and $tl -match $BadCmd) -or (Test-HighRisk $t.TargetPath)) {
+                Flag "$line  ->  $tl" 'File' $f.FullName $f.FullName -High; continue
+            }
+            W "     $line  ->  $($t.TargetPath)"; continue
+        }
+        W "     $line"
     }
 }
 $wl = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
@@ -142,16 +179,20 @@ foreach ($t in Get-ScheduledTask | Where-Object { $_.TaskPath -notlike '\Microso
         $cmd = "$($a.Execute) $($a.Arguments)".Trim()
         if (-not $cmd) { continue }
         if ($t.TaskName -like 'UGC Archive Guard*' -or $t.TaskName -like 'IhsanTechFix*') { continue }
-        $line = "Task $($t.TaskPath)$($t.TaskName)  ->  $cmd"
-        if ($cmd -match $UserWritable -or ($cmd -match $ScriptHosts -and $cmd -match $BadCmd)) { Flag $line 'Task' "$($t.TaskPath)|$($t.TaskName)" (Get-ExePath $a.Execute) }
+        $exe  = Get-ExePath $a.Execute
+        $line = "Task $($t.TaskPath)$($t.TaskName)  ->  $cmd   [$(Get-SigStatus $exe)]"
+        if (($cmd -match $ScriptHosts -and $cmd -match $BadCmd) -or (Test-HighRisk $exe)) {
+            Flag $line 'Task' "$($t.TaskPath)|$($t.TaskName)" $exe -High
+        } elseif ($exe -match $UserWritable -and $exe -notmatch $Noise) { W "  ?  $line" }
         elseif ($t.Date -and ([datetime]$t.Date) -ge $Since) { W "  ?  (new) $line" }
     }
 }
 foreach ($s in Get-CimInstance Win32_Service) {
-    $path = [string]$s.PathName
-    if ($path -match $UserWritable -or ($path -match $ScriptHosts -and $path -match $BadCmd)) {
-        Flag "Service $($s.Name) [$($s.State)/$($s.StartMode)]  ->  $path" 'Service' $s.Name (Get-ExePath $path)
-    }
+    $path = [string]$s.PathName; $exe = Get-ExePath $path
+    if ($exe -match $Noise) { continue }
+    $line = "Service $($s.Name) [$($s.State)/$($s.StartMode)]  ->  $path   [$(Get-SigStatus $exe)]"
+    if (($path -match $ScriptHosts -and $path -match $BadCmd) -or (Test-HighRisk $exe)) { Flag $line 'Service' $s.Name $exe -High }
+    elseif ($exe -match $UserWritable) { W "  ?  $line" }
 }
 
 # ------------------------------------------------------------------ 4. processes
@@ -166,8 +207,8 @@ foreach ($pr in Get-CimInstance Win32_Process) {
     $sig = Get-SigStatus $path
     $owner = (Invoke-CimMethod -InputObject $pr -MethodName GetOwner).User
     $line = "PID $($pr.ProcessId) [$owner] $path   [$sig]"
-    if ($badLine -or ($path -match $UserWritable -and $sig -like 'UNSIGNED*')) {
-        Flag "$line`n       cmd: $cl" 'Process' $pr.ProcessId $path; $suspectPids += $pr.ProcessId
+    if ($badLine -or (Test-HighRisk $path)) {
+        Flag "$line`n       cmd: $cl" 'Process' $pr.ProcessId $path -High; $suspectPids += $pr.ProcessId
     } elseif ($path -match $UserWritable) {
         W "  ?  $line"; $suspectPids += $pr.ProcessId
     }
@@ -253,6 +294,11 @@ foreach ($sid in Get-ChildItem 'Registry::HKEY_USERS' | Where-Object { $_.PSChil
 
 # ------------------------------------------------------------------ summary
 Head 'SUMMARY'
+if ($script:Top) {
+    W "  TOP SUSPECTS ($(@($script:Top).Count)) - look at these first (marked !!! above):"
+    $script:Top | ForEach-Object { W "   >> $_" }
+    W ''
+}
 if ($script:Flags -eq 0) {
     W '  No obvious footprints found. This does NOT prove the PC is clean - also run a full/offline scan.'
 } else {
@@ -261,6 +307,11 @@ if ($script:Flags -eq 0) {
 }
 W ''
 W "Report saved: $Report"
+# Put the top suspects at the very top of the report as well
+$topBlock = @('#' * 90, '  TOP SUSPECTS - start here (details below, marked !!!)', '#' * 90)
+$topBlock += $(if ($script:Top) { $script:Top | ForEach-Object { "   >> $_" } } else { '   (none - no high-risk items found)' })
+$topBlock += ''
+Set-Content -Path $Report -Value ($topBlock + (Get-Content $Report))
 $Json = $Report -replace '\.txt$', '.json'
 ConvertTo-Json -InputObject @($script:Findings) -Depth 3 | Set-Content -Path $Json -Encoding UTF8
 W "Findings for Security 8 Cleanup: $Json"

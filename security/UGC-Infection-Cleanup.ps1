@@ -42,7 +42,8 @@ if ($age.TotalHours -gt 2) { Write-Host 'WARNING: findings are over 2 hours old 
 $items = @(Get-Content $Findings -Raw | ConvertFrom-Json) | Where-Object { $_.Kind -and $_.Kind -ne 'Info' }
 if (-not $items) { Write-Host 'Nothing removable in the findings (only informational items). Done.' -ForegroundColor Green; return }
 
-$picked = $items | Select-Object Kind, Detail, Target, File |
+$picked = $items | Sort-Object @{ e = { if ($_.Severity -eq 'HIGH') { 0 } else { 1 } } } |
+          Select-Object Severity, Kind, Detail, Target, File |
           Out-GridView -Title 'Tick what to REMOVE (Ctrl/Shift+click), then OK. Leave anything you recognise as legitimate.' -PassThru
 if (-not $picked) { Write-Host 'Nothing selected - no changes made.' -ForegroundColor Yellow; return }
 
