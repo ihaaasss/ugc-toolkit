@@ -9,7 +9,9 @@
 
     Normal, non-password ZIP/RAR files from email, suppliers, NAS etc. keep working.
 
-    Watches every user's Downloads, Desktop, Documents (incl. OneDrive Desktop/Documents).
+    Watches every user's Downloads, Desktop, Documents (incl. OneDrive Desktop/Documents)
+    AND the WhatsApp Desktop app's own folders, where chat downloads are stored
+    (AppData\Local\Packages\*WhatsApp*  and  AppData\Roaming\WhatsApp).
     Runs as a hidden SYSTEM scheduled task at startup - no window, users can't stop it.
 
 .USAGE (as Administrator)
@@ -175,29 +177,95 @@ function Invoke-Quarantine([IO.FileInfo]$f, [string]$user, [string]$reason) {
     }
 }
 
-$seen = @{}
+# WhatsApp Desktop keeps downloaded files inside its own app folder, not in Downloads:
+#   Store app : C:\Users\<user>\AppData\Local\Packages\*WhatsApp*\
+#   Old app   : C:\Users\<user>\AppData\Roaming\WhatsApp\
+# These are deep folders full of media, so they are watched with change notifications
+# instead of being re-listed every few seconds.
+function Get-WhatsAppFolders {
+    $skip = 'Public','Default','Default User','All Users'
+    foreach ($u in Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue) {
+        if ($skip -contains $u.Name) { continue }
+        $pk = Join-Path $u.FullName 'AppData\Local\Packages'
+        foreach ($d in Get-ChildItem $pk -Directory -Filter '*WhatsApp*' -ErrorAction SilentlyContinue) {
+            [pscustomobject]@{ User = $u.Name; Path = $d.FullName }
+        }
+        $old = Join-Path $u.FullName 'AppData\Roaming\WhatsApp'
+        if (Test-Path $old) { [pscustomobject]@{ User = $u.Name; Path = $old } }
+    }
+}
+
+$seen     = @{}
+$pending  = @{}   # path -> @{ User; WA } for files reported by the WhatsApp watchers
+$watchers = @{}   # folder path -> FileSystemWatcher
+
+# Returns $true once the file has been dealt with, $false if it should be retried later
+function Test-AndQuarantine([IO.FileInfo]$f, [string]$user, [bool]$inWhatsAppFolder) {
+    # Skip OneDrive cloud-only placeholders (reading them would trigger a download)
+    if (([int]$f.Attributes -band 0x400000) -or ($f.Attributes -band [IO.FileAttributes]::Offline)) { return $true }
+    $key = '{0}|{1}|{2}' -f $f.FullName, $f.Length, $f.LastWriteTimeUtc.Ticks
+    if ($seen.ContainsKey($key)) { return $true }
+    if (-not (Test-FileReady $f)) { return $false }
+    $seen[$key] = $true
+    try {
+        if ($BlockAllWhatsAppArchives -and ($inWhatsAppFolder -or (Test-FromWhatsApp $f.FullName))) {
+            Invoke-Quarantine $f $user 'archive received from WhatsApp'
+        } elseif (Test-Encrypted $f) {
+            Invoke-Quarantine $f $user 'password-protected archive'
+        }
+    } catch { Log "ERROR on $($f.FullName): $($_.Exception.Message)" }
+    return $true
+}
+
+function Update-WhatsAppWatchers {
+    foreach ($wa in Get-WhatsAppFolders) {
+        if ($watchers.ContainsKey($wa.Path)) { continue }
+        try {
+            $fsw = New-Object IO.FileSystemWatcher $wa.Path
+            $fsw.IncludeSubdirectories = $true
+            $fsw.NotifyFilter = [IO.NotifyFilters]'FileName, LastWrite, Size'
+            $fsw.InternalBufferSize = 65536
+            $n = $watchers.Count
+            foreach ($evt in 'Created','Renamed','Changed') {
+                Register-ObjectEvent -InputObject $fsw -EventName $evt -SourceIdentifier "UGCWA_${n}_$evt" -MessageData $wa.User | Out-Null
+            }
+            $fsw.EnableRaisingEvents = $true
+            $watchers[$wa.Path] = $fsw
+            Log "Watching WhatsApp folder [$($wa.User)] $($wa.Path)"
+
+            # One-time sweep for archives already sitting in the folder
+            Get-ChildItem -LiteralPath $wa.Path -File -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $ArchiveExt -contains $_.Extension.ToLower() } |
+                ForEach-Object { $pending[$_.FullName] = $wa.User }
+        } catch { Log "Could not watch $($wa.Path): $($_.Exception.Message)" }
+    }
+}
+
+$loop = 0
 while ($true) {
     try {
-        foreach ($w in Get-WatchFolders) {
-            $files = Get-ChildItem -LiteralPath $w.Path -File -Recurse -Depth 1 -ErrorAction SilentlyContinue |
-                     Where-Object { $ArchiveExt -contains $_.Extension.ToLower() }
-            foreach ($f in $files) {
-                # Skip OneDrive cloud-only placeholders (reading them would trigger a download)
-                if (([int]$f.Attributes -band 0x400000) -or ($f.Attributes -band [IO.FileAttributes]::Offline)) { continue }
-                $key = '{0}|{1}|{2}' -f $f.FullName, $f.Length, $f.LastWriteTimeUtc.Ticks
-                if ($seen.ContainsKey($key)) { continue }
-                if (-not (Test-FileReady $f)) { continue }
-                $seen[$key] = $true
+        # Re-check for new WhatsApp installs / new user profiles about once a minute
+        if (($loop % [Math]::Max(1, [int](60 / $PollSeconds))) -eq 0) { Update-WhatsAppWatchers }
+        $loop++
 
-                try {
-                    if ($BlockAllWhatsAppArchives -and (Test-FromWhatsApp $f.FullName)) {
-                        Invoke-Quarantine $f $w.User 'archive received from WhatsApp'
-                    } elseif (Test-Encrypted $f) {
-                        Invoke-Quarantine $f $w.User 'password-protected archive'
-                    }
-                } catch { Log "ERROR on $($f.FullName): $($_.Exception.Message)" }
-            }
+        # 1. Downloads / Desktop / Documents (incl. OneDrive) - quick listing
+        foreach ($w in Get-WatchFolders) {
+            Get-ChildItem -LiteralPath $w.Path -File -Recurse -Depth 1 -ErrorAction SilentlyContinue |
+                Where-Object { $ArchiveExt -contains $_.Extension.ToLower() } |
+                ForEach-Object { [void](Test-AndQuarantine $_ $w.User $false) }
         }
+
+        # 2. WhatsApp Desktop folders - collect change notifications
+        foreach ($e in @(Get-Event -ErrorAction SilentlyContinue | Where-Object { $_.SourceIdentifier -like 'UGCWA_*' })) {
+            $p = $e.SourceEventArgs.FullPath
+            if ($p -and ($ArchiveExt -contains [IO.Path]::GetExtension($p).ToLower())) { $pending[$p] = $e.MessageData }
+            Remove-Event -EventIdentifier $e.EventIdentifier
+        }
+        foreach ($p in @($pending.Keys)) {
+            if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { $pending.Remove($p); continue }
+            if (Test-AndQuarantine (Get-Item -LiteralPath $p -Force) $pending[$p] $true) { $pending.Remove($p) }
+        }
+
         if ($seen.Count -gt 5000) { $seen.Clear() }
     } catch { Log "Loop error: $($_.Exception.Message)" }
     Start-Sleep -Seconds $PollSeconds

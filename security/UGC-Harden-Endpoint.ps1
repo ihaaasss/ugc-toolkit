@@ -205,6 +205,16 @@ foreach ($f in @(
     '%USERPROFILE%\AppData\Local\Microsoft\Windows\INetCache'
 )) { Add-SrpRule $DISALLOWED $f 'UGC: block execution from download/temp folder' }
 
+# WhatsApp Desktop stores chat downloads in its own data folder, not in Downloads.
+# It is data only (the app itself runs from Program Files\WindowsApps), so block execution there.
+$waPackages = @('5319275A.WhatsAppDesktop_cv1g1gvanyjgm') +
+              @(Get-ChildItem "$env:SystemDrive\Users\*\AppData\Local\Packages" -Directory -Filter '*WhatsApp*' -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty Name)
+foreach ($n in ($waPackages | Sort-Object -Unique)) {
+    Add-SrpRule $DISALLOWED "%USERPROFILE%\AppData\Local\Packages\$n" 'UGC: block execution from WhatsApp Desktop downloads'
+}
+Add-SrpRule $DISALLOWED '%USERPROFILE%\AppData\Roaming\WhatsApp' 'UGC: block execution from WhatsApp (classic app) data'
+
 # Desktop & Documents (incl. OneDrive-redirected): block risky types only, so normal shortcuts keep working
 $extFolders = '%USERPROFILE%\Desktop','%USERPROFILE%\Documents',
               '%OneDriveCommercial%\Desktop','%OneDriveCommercial%\Documents',

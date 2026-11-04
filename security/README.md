@@ -4,8 +4,8 @@ Two scripts that stop "invoice" malware sent as password-protected ZIP/RAR files
 
 | Script | What it does |
 |---|---|
-| `UGC-ArchiveGuard.ps1` | Hidden SYSTEM task that **quarantines** archives the moment they land: any archive downloaded from WhatsApp Web, and any **password-protected** archive from anywhere. Normal ZIP/RAR files keep working. |
-| `UGC-Harden-Endpoint.ps1` | If anything slips through, **nothing inside can run**: blocks execution from Downloads/Temp/Outlook temp (Software Restriction Policies), blocks risky file types on Desktop/Documents, disables Windows Script Host, opens `.js/.vbs/.hta` in Notepad, blocks `mshta`, hides ISO/VHD mount, enforces SmartScreen, shows file extensions, blocks Office internet macros. |
+| `UGC-ArchiveGuard.ps1` | Hidden SYSTEM task that **quarantines** archives the moment they land: any archive downloaded from WhatsApp (WhatsApp Web **and** the WhatsApp Desktop app's own download folder), and any **password-protected** archive from anywhere. Normal ZIP/RAR files keep working. |
+| `UGC-Harden-Endpoint.ps1` | If anything slips through, **nothing inside can run**: blocks execution from Downloads/Temp/Outlook temp and the WhatsApp Desktop download folder (Software Restriction Policies), blocks risky file types on Desktop/Documents, disables Windows Script Host, opens `.js/.vbs/.hta` in Notepad, blocks `mshta`, hides ISO/VHD mount, enforces SmartScreen, shows file extensions, blocks Office internet macros. |
 
 ## Install from GitHub (PowerShell as Administrator)
 
