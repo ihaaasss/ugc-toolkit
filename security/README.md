@@ -29,6 +29,8 @@ powershell -ExecutionPolicy Bypass -File .\UGC-Harden-Endpoint.ps1
 | Command | Effect |
 |---|---|
 | `UGC-ArchiveGuard.ps1 -Install -OnlyPasswordProtected` | Only quarantine password-protected archives |
+| `UGC-ArchiveGuard.ps1 -PauseMinutes 30` | Turn the guard off for 30 min to receive a file; it resumes by itself (also on reboot) |
+| `UGC-Release-Quarantine.ps1` | Pick quarantined files from a list; they're copied to `C:\Users\<user>\IT-Released\` |
 | `UGC-ArchiveGuard.ps1 -Uninstall` | Remove the guard (quarantine folder is kept) |
 | `UGC-Harden-Endpoint.ps1 -BlockArchiveTools` | Also block 7-Zip/WinRAR (breaks **all** RAR/7z opening - Finance PCs only) |
 | `UGC-Harden-Endpoint.ps1 -ExemptAdmins` | Skip restrictions for local admins (only if users are not admins) |

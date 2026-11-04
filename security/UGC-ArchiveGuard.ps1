@@ -17,6 +17,7 @@
 .USAGE (as Administrator)
     powershell -ExecutionPolicy Bypass -File .\UGC-ArchiveGuard.ps1 -Install
     powershell -ExecutionPolicy Bypass -File .\UGC-ArchiveGuard.ps1 -Uninstall
+    powershell -ExecutionPolicy Bypass -File .\UGC-ArchiveGuard.ps1 -PauseMinutes 30
 
     Quarantine : C:\ProgramData\UGC\ArchiveGuard\Quarantine\<username>\   (Admins/SYSTEM only)
     Log        : C:\ProgramData\UGC\ArchiveGuard\guard.log
@@ -27,6 +28,7 @@ param(
     [switch]$Uninstall,
     [switch]$Run,
     [switch]$OnlyPasswordProtected,   # don't block normal archives from WhatsApp, only password-protected ones
+    [int]$PauseMinutes = 0,           # temporarily stop the guard; it switches itself back on
     [int]$PollSeconds = 5
 )
 
@@ -94,6 +96,23 @@ if ($Install) {
     $state = (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue).State
     if ($ok) { Log "OK - Archive Guard is running (task state: $state)" }
     else     { Log "WARNING - Archive Guard did not report in (task state: $state). Run: Start-ScheduledTask '$TaskName' and check this log." }
+    return
+}
+
+# ================================================================ PAUSE
+if ($PauseMinutes -gt 0) {
+    Assert-Admin
+    if (-not (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue)) { throw 'Archive Guard is not installed on this PC.' }
+    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    Stop-Guard
+    $resumeAt  = (Get-Date).AddMinutes($PauseMinutes)
+    $action    = New-ScheduledTaskAction -Execute 'powershell.exe' `
+                 -Argument "-NoProfile -WindowStyle Hidden -Command Start-ScheduledTask -TaskName '$TaskName'"
+    $trigger   = New-ScheduledTaskTrigger -Once -At $resumeAt
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    Register-ScheduledTask -TaskName "$TaskName - Resume" -Action $action -Trigger $trigger -Principal $principal `
+        -Description 'Turns UGC Archive Guard back on after a pause' -Force | Out-Null
+    Log ("PAUSED by {0} for {1} min - resumes automatically at {2:HH:mm} (or on reboot)" -f $env:USERNAME, $PauseMinutes, $resumeAt)
     return
 }
 
