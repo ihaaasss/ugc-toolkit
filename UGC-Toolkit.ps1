@@ -99,7 +99,10 @@ if (-not (Test-IsAdmin)) {
     } else {
         # Started with irm | iex: save the script we already downloaded instead
         # of downloading it a second time in the admin window
-        $file = Join-Path $env:TEMP 'IhsanTechFix.ps1'
+        # Not %TEMP%: the UGC hardening policy blocks scripts from running in Temp
+        $launchDir = Join-Path $env:LOCALAPPDATA 'IhsanTechFix'
+        New-Item -ItemType Directory -Path $launchDir -Force | Out-Null
+        $file = Join-Path $launchDir 'IhsanTechFix.ps1'
         $text = "$($MyInvocation.MyCommand.ScriptBlock)"
         if ($text.Length -lt 1000 -or $text -notmatch 'ToolkitUrl') { $text = Invoke-RestMethod $ToolkitUrl }
         Set-Content -Path $file -Value $text -Encoding UTF8
@@ -246,7 +249,7 @@ function Install-NetworkPrinter([string]$Name, [string]$IP, [string]$Driver, [st
         foreach ($src in $Source) {
             if ($src -match '^https?://') {
                 try {
-                    $zip = Join-Path $env:TEMP "IhsanTechFix_driver.zip"
+                    $zip = Join-Path (New-Item -ItemType Directory -Force -Path (Join-Path $env:ProgramData 'IhsanTechFix\work')).FullName "IhsanTechFix_driver.zip"
                     "Driver  : downloading from $src"
                     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
                     Invoke-WebRequest -Uri $src -OutFile $zip -UseBasicParsing
@@ -259,7 +262,7 @@ function Install-NetworkPrinter([string]$Name, [string]$IP, [string]$Driver, [st
         }
         if (-not $work) { throw 'The driver could not be found in any source.' }
         if ($work -like '*.zip') {
-            $dest = Join-Path $env:TEMP ("IhsanTechFix_drv_" + [guid]::NewGuid().ToString('N'))
+            $dest = Join-Path (New-Item -ItemType Directory -Force -Path (Join-Path $env:ProgramData 'IhsanTechFix\work')).FullName ("IhsanTechFix_drv_" + [guid]::NewGuid().ToString('N'))
             Expand-Archive -Path $work -DestinationPath $dest -Force
             $work = $dest
         }
@@ -628,7 +631,7 @@ $Fixes = @(
                winget install --id Tailscale.Tailscale -e --silent --accept-package-agreements --accept-source-agreements
                if (-not (Test-Path $exe)) {
                    Write-Host 'winget not available - downloading the MSI instead...' -ForegroundColor Yellow
-                   $msi = Join-Path $env:TEMP 'tailscale-setup.msi'
+                   $msi = Join-Path (New-Item -ItemType Directory -Force -Path (Join-Path $env:ProgramData 'IhsanTechFix\work')).FullName 'tailscale-setup.msi'
                    Invoke-WebRequest 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi' -OutFile $msi -UseBasicParsing
                    Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn TS_UNATTENDEDMODE=always" -Wait
                }
