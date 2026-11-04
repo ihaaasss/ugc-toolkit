@@ -1,0 +1,204 @@
+<#
+.SYNOPSIS
+    UGC Archive Guard - quarantines dangerous archives the moment they land on a PC.
+
+    Blocks (moves to a locked quarantine folder that users cannot open):
+      1. ANY archive downloaded from WhatsApp Web / WhatsApp (zip, rar, 7z, iso, img ...)
+      2. ANY password-protected archive, from any source (WhatsApp Desktop, email,
+         USB copy, browser) - this is the malware trick, legit files rarely need it.
+
+    Normal, non-password ZIP/RAR files from email, suppliers, NAS etc. keep working.
+
+    Watches every user's Downloads, Desktop, Documents (incl. OneDrive Desktop/Documents).
+    Runs as a hidden SYSTEM scheduled task at startup - no window, users can't stop it.
+
+.USAGE (as Administrator)
+    powershell -ExecutionPolicy Bypass -File .\UGC-ArchiveGuard.ps1 -Install
+    powershell -ExecutionPolicy Bypass -File .\UGC-ArchiveGuard.ps1 -Uninstall
+
+    Quarantine : C:\ProgramData\UGC\ArchiveGuard\Quarantine\<username>\   (Admins/SYSTEM only)
+    Log        : C:\ProgramData\UGC\ArchiveGuard\guard.log
+#>
+[CmdletBinding()]
+param(
+    [switch]$Install,
+    [switch]$Uninstall,
+    [switch]$Run,
+    [bool]$BlockAllWhatsAppArchives = $true,   # $false = only block password-protected ones
+    [int]$PollSeconds = 5
+)
+
+$GuardHome = 'C:\ProgramData\UGC\ArchiveGuard'
+$Quar      = Join-Path $GuardHome 'Quarantine'
+$LogFile   = Join-Path $GuardHome 'guard.log'
+$Installed = Join-Path $GuardHome 'ArchiveGuard.ps1'
+$TaskName  = 'UGC Archive Guard'
+$SourceUrl = 'https://raw.githubusercontent.com/ihaaasss/ugc-toolkit/main/security/UGC-ArchiveGuard.ps1'
+
+function Log([string]$m) {
+    $line = '{0:yyyy-MM-dd HH:mm:ss}  {1}' -f (Get-Date), $m
+    try { Add-Content -Path $LogFile -Value $line } catch {}
+    Write-Output $line
+}
+function Assert-Admin {
+    $p = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+    if (-not $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run as Administrator.' }
+}
+function Stop-Guard {
+    Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like '*ArchiveGuard.ps1*-Run*' -and $_.ProcessId -ne $PID } |
+        ForEach-Object { Invoke-CimMethod -InputObject $_ -MethodName Terminate | Out-Null }
+}
+
+# ================================================================ INSTALL
+if ($Install) {
+    Assert-Admin
+    New-Item -ItemType Directory -Path $Quar -Force | Out-Null
+    # Quarantine: only SYSTEM + Administrators (SIDs, so it works on any Windows language)
+    cmd /c "icacls `"$Quar`" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F >nul" | Out-Null
+
+    if ($PSCommandPath) {
+        Copy-Item -LiteralPath $PSCommandPath -Destination $Installed -Force
+    } else {
+        # Run straight from GitHub (irm | iex) - no local file, so fetch the script itself
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -UseBasicParsing -Uri $SourceUrl -OutFile $Installed
+    }
+    cmd /c "icacls `"$Installed`" /inheritance:r /grant:r *S-1-5-18:F *S-1-5-32-544:F *S-1-5-32-545:RX >nul" | Out-Null
+
+    Stop-Guard
+    $waFlag = if ($BlockAllWhatsAppArchives) { '$true' } else { '$false' }
+    $action    = New-ScheduledTaskAction -Execute 'powershell.exe' `
+                 -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Installed`" -Run -BlockAllWhatsAppArchives $waFlag"
+    $trigger   = New-ScheduledTaskTrigger -AtStartup
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 `
+                 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                 -MultipleInstances IgnoreNew
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal `
+        -Settings $settings -Description 'Quarantines WhatsApp and password-protected archives (UGC IT)' -Force | Out-Null
+    Start-ScheduledTask -TaskName $TaskName
+    Log "Installed on $env:COMPUTERNAME and started (BlockAllWhatsAppArchives=$BlockAllWhatsAppArchives)"
+    return
+}
+
+# ================================================================ UNINSTALL
+if ($Uninstall) {
+    Assert-Admin
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+    Stop-Guard
+    Log "Uninstalled from $env:COMPUTERNAME (quarantine folder kept: $Quar)"
+    return
+}
+
+if (-not $Run) { Write-Output 'Use -Install or -Uninstall.'; return }
+
+# ================================================================ GUARD LOOP (runs as SYSTEM)
+$ArchiveExt = '.zip','.rar','.7z','.tar','.gz','.tgz','.bz2','.xz','.cab','.arj','.lzh','.ace','.z',
+              '.iso','.img','.vhd','.vhdx'
+$MaxTestBytes = 500MB
+
+$SevenZip = @("$env:ProgramFiles\7-Zip\7z.exe", "${env:ProgramFiles(x86)}\7-Zip\7z.exe") |
+            Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+$UnRar    = @("$env:ProgramFiles\WinRAR\UnRAR.exe", "${env:ProgramFiles(x86)}\WinRAR\UnRAR.exe") |
+            Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+$MsgExe   = "$env:SystemRoot\System32\msg.exe"
+
+Log "Guard started (7-Zip: $([bool]$SevenZip), UnRAR: $([bool]$UnRar), BlockAllWhatsAppArchives=$BlockAllWhatsAppArchives)"
+
+function Get-WatchFolders {
+    $skip = 'Public','Default','Default User','All Users'
+    foreach ($u in Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue) {
+        if ($skip -contains $u.Name) { continue }
+        foreach ($sub in 'Downloads','Desktop','Documents') {
+            $p = Join-Path $u.FullName $sub
+            if (Test-Path $p) { [pscustomobject]@{ User = $u.Name; Path = $p } }
+        }
+        foreach ($od in Get-ChildItem $u.FullName -Directory -Filter 'OneDrive*' -ErrorAction SilentlyContinue) {
+            foreach ($sub in 'Desktop','Documents') {
+                $p = Join-Path $od.FullName $sub
+                if (Test-Path $p) { [pscustomobject]@{ User = $u.Name; Path = $p } }
+            }
+        }
+    }
+}
+
+function Test-FileReady([IO.FileInfo]$f) {
+    if (((Get-Date) - $f.LastWriteTime).TotalSeconds -lt 3) { return $false }      # still being written
+    try { $s = [IO.File]::Open($f.FullName, 'Open', 'Read', 'None'); $s.Close(); return $true }
+    catch { return $false }                                                          # locked
+}
+
+function Test-FromWhatsApp([string]$path) {
+    try {
+        $z = Get-Content -LiteralPath $path -Stream Zone.Identifier -ErrorAction Stop
+        return (($z -join ' ') -match 'whatsapp')
+    } catch { return $false }
+}
+
+function Test-Encrypted([IO.FileInfo]$f) {
+    $ext = $f.Extension.ToLower()
+    if ($f.Length -gt $MaxTestBytes) { return $false }
+
+    if ($SevenZip) {
+        # Wrong dummy password: unencrypted archives still test OK (exit 0/1), encrypted ones fail (exit 2)
+        $p = Start-Process -FilePath $SevenZip -WindowStyle Hidden -Wait -PassThru `
+             -ArgumentList @('t', '-pUGC_NoSuchPassword_9x', '-y', '-bso0', '-bse0', '-bsp0', "`"$($f.FullName)`"")
+        return ($p.ExitCode -ge 2)
+    }
+    if ($ext -eq '.zip') {
+        # ZIP local header: signature PK\3\4, general-purpose flag bit 0 = encrypted
+        $buf = New-Object byte[] 8
+        $s = [IO.File]::OpenRead($f.FullName); [void]$s.Read($buf, 0, 8); $s.Close()
+        if ([BitConverter]::ToUInt32($buf, 0) -eq 0x04034b50) { return (($buf[6] -band 1) -eq 1) }
+        return $false
+    }
+    if ($ext -eq '.rar' -and $UnRar) {
+        # -p- = never ask for password; encrypted archive returns non-zero
+        $p = Start-Process -FilePath $UnRar -WindowStyle Hidden -Wait -PassThru `
+             -ArgumentList @('t', '-p-', '-y', '-idq', "`"$($f.FullName)`"")
+        return ($p.ExitCode -ne 0)
+    }
+    return $false
+}
+
+function Invoke-Quarantine([IO.FileInfo]$f, [string]$user, [string]$reason) {
+    $dest = Join-Path $Quar $user
+    New-Item -ItemType Directory -Path $dest -Force | Out-Null
+    $target = Join-Path $dest ('{0:yyyyMMdd-HHmmss}_{1}.blocked' -f (Get-Date), $f.Name)
+    Move-Item -LiteralPath $f.FullName -Destination $target -Force
+    Log "QUARANTINED [$user] $($f.FullName)  ->  $target  | $reason"
+    if (Test-Path $MsgExe) {
+        $text = "IT Security: the file '$($f.Name)' was blocked ($reason). " +
+                "If you need this file for work, contact IT."
+        Start-Process -FilePath $MsgExe -ArgumentList @('*', '/TIME:120', "`"$text`"") -WindowStyle Hidden
+    }
+}
+
+$seen = @{}
+while ($true) {
+    try {
+        foreach ($w in Get-WatchFolders) {
+            $files = Get-ChildItem -LiteralPath $w.Path -File -Recurse -Depth 1 -ErrorAction SilentlyContinue |
+                     Where-Object { $ArchiveExt -contains $_.Extension.ToLower() }
+            foreach ($f in $files) {
+                # Skip OneDrive cloud-only placeholders (reading them would trigger a download)
+                if (([int]$f.Attributes -band 0x400000) -or ($f.Attributes -band [IO.FileAttributes]::Offline)) { continue }
+                $key = '{0}|{1}|{2}' -f $f.FullName, $f.Length, $f.LastWriteTimeUtc.Ticks
+                if ($seen.ContainsKey($key)) { continue }
+                if (-not (Test-FileReady $f)) { continue }
+                $seen[$key] = $true
+
+                try {
+                    if ($BlockAllWhatsAppArchives -and (Test-FromWhatsApp $f.FullName)) {
+                        Invoke-Quarantine $f $w.User 'archive received from WhatsApp'
+                    } elseif (Test-Encrypted $f) {
+                        Invoke-Quarantine $f $w.User 'password-protected archive'
+                    }
+                } catch { Log "ERROR on $($f.FullName): $($_.Exception.Message)" }
+            }
+        }
+        if ($seen.Count -gt 5000) { $seen.Clear() }
+    } catch { Log "Loop error: $($_.Exception.Message)" }
+    Start-Sleep -Seconds $PollSeconds
+}

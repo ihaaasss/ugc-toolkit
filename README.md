@@ -37,3 +37,7 @@ For installs that get falsely blocked. **Turn off Defender protection** disables
 ## Network diagnostics
 
 The Network tab includes **Ping a host**, **Trace route (tracert)**, **Test a TCP port**, **Listening ports on this PC**, **Scan a host (nmap)** and **Discover devices on the LAN (nmap)**. The nmap cards install nmap via winget (`Insecure.Nmap`) on first use. Host/IP inputs are validated so they can't inject extra command-line options. Only scan machines and networks you are responsible for.
+
+## Security: WhatsApp / password-ZIP malware protection
+
+The `security/` folder holds two scripts that stop password-protected "invoice" ZIP/RAR malware arriving over WhatsApp or email: **UGC-ArchiveGuard.ps1** quarantines those archives on arrival, and **UGC-Harden-Endpoint.ps1** stops anything inside from running. See [security/README.md](security/README.md) for install commands, options and testing.
