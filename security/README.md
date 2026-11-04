@@ -28,7 +28,7 @@ powershell -ExecutionPolicy Bypass -File .\UGC-Harden-Endpoint.ps1
 
 | Command | Effect |
 |---|---|
-| `UGC-ArchiveGuard.ps1 -Install -BlockAllWhatsAppArchives $false` | Only quarantine password-protected archives |
+| `UGC-ArchiveGuard.ps1 -Install -OnlyPasswordProtected` | Only quarantine password-protected archives |
 | `UGC-ArchiveGuard.ps1 -Uninstall` | Remove the guard (quarantine folder is kept) |
 | `UGC-Harden-Endpoint.ps1 -BlockArchiveTools` | Also block 7-Zip/WinRAR (breaks **all** RAR/7z opening - Finance PCs only) |
 | `UGC-Harden-Endpoint.ps1 -ExemptAdmins` | Skip restrictions for local admins (only if users are not admins) |

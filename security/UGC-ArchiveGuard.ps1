@@ -26,7 +26,7 @@ param(
     [switch]$Install,
     [switch]$Uninstall,
     [switch]$Run,
-    [bool]$BlockAllWhatsAppArchives = $true,   # $false = only block password-protected ones
+    [switch]$OnlyPasswordProtected,   # don't block normal archives from WhatsApp, only password-protected ones
     [int]$PollSeconds = 5
 )
 
@@ -69,9 +69,10 @@ if ($Install) {
     cmd /c "icacls `"$Installed`" /inheritance:r /grant:r *S-1-5-18:F *S-1-5-32-544:F *S-1-5-32-545:RX >nul" | Out-Null
 
     Stop-Guard
-    $waFlag = if ($BlockAllWhatsAppArchives) { '$true' } else { '$false' }
+    # Switches only - a [bool] value can't be passed through powershell.exe -File
+    $modeArg = if ($OnlyPasswordProtected) { ' -OnlyPasswordProtected' } else { '' }
     $action    = New-ScheduledTaskAction -Execute 'powershell.exe' `
-                 -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Installed`" -Run -BlockAllWhatsAppArchives $waFlag"
+                 -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Installed`" -Run$modeArg"
     $trigger   = New-ScheduledTaskTrigger -AtStartup
     $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
     $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 `
@@ -79,8 +80,20 @@ if ($Install) {
                  -MultipleInstances IgnoreNew
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal `
         -Settings $settings -Description 'Quarantines WhatsApp and password-protected archives (UGC IT)' -Force | Out-Null
+    $startedAt = (Get-Date).AddSeconds(-2)
     Start-ScheduledTask -TaskName $TaskName
-    Log "Installed on $env:COMPUTERNAME and started (BlockAllWhatsAppArchives=$BlockAllWhatsAppArchives)"
+    Log "Installed on $env:COMPUTERNAME (OnlyPasswordProtected=$OnlyPasswordProtected) - checking it starts..."
+
+    # Self-check: the guard writes 'Guard started' within a few seconds if it is really running
+    $ok = $false
+    for ($i = 0; $i -lt 15 -and -not $ok; $i++) {
+        Start-Sleep -Seconds 1
+        $ok = [bool](Get-Content $LogFile -Tail 20 -ErrorAction SilentlyContinue | Where-Object {
+            $_ -match '^(\S+ \S+)\s+Guard started' -and ([datetime]$Matches[1] -ge $startedAt) })
+    }
+    $state = (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue).State
+    if ($ok) { Log "OK - Archive Guard is running (task state: $state)" }
+    else     { Log "WARNING - Archive Guard did not report in (task state: $state). Run: Start-ScheduledTask '$TaskName' and check this log." }
     return
 }
 
@@ -106,7 +119,7 @@ $UnRar    = @("$env:ProgramFiles\WinRAR\UnRAR.exe", "${env:ProgramFiles(x86)}\Wi
             Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 $MsgExe   = "$env:SystemRoot\System32\msg.exe"
 
-Log "Guard started (7-Zip: $([bool]$SevenZip), UnRAR: $([bool]$UnRar), BlockAllWhatsAppArchives=$BlockAllWhatsAppArchives)"
+Log "Guard started (7-Zip: $([bool]$SevenZip), UnRAR: $([bool]$UnRar), OnlyPasswordProtected=$OnlyPasswordProtected)"
 
 function Get-WatchFolders {
     $skip = 'Public','Default','Default User','All Users'
@@ -208,7 +221,7 @@ function Test-AndQuarantine([IO.FileInfo]$f, [string]$user, [bool]$inWhatsAppFol
     if (-not (Test-FileReady $f)) { return $false }
     $seen[$key] = $true
     try {
-        if ($BlockAllWhatsAppArchives -and ($inWhatsAppFolder -or (Test-FromWhatsApp $f.FullName))) {
+        if ((-not $OnlyPasswordProtected) -and ($inWhatsAppFolder -or (Test-FromWhatsApp $f.FullName))) {
             Invoke-Quarantine $f $user 'archive received from WhatsApp'
         } elseif (Test-Encrypted $f) {
             Invoke-Quarantine $f $user 'password-protected archive'
