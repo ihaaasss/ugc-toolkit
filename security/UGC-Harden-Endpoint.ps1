@@ -186,7 +186,7 @@ Set-Reg $SRP 'AuthenticodeEnabled' 0
 Set-Reg $SRP 'ExecutableTypes' @(
     'ADE','ADP','BAS','BAT','CHM','CMD','COM','CPL','CRT','EXE','HLP','HTA','INF','INS','ISP',
     'LNK','MDB','MDE','MSC','MSI','MSP','MST','OCX','PCD','PIF','REG','SCR','SHS','URL','VB',
-    'WSC','JS','JSE','VBS','VBE','WSF','WSH','PS1','ISO','IMG','VHD','VHDX') 'MultiString'
+    'WSC','JS','JSE','VBS','VBE','WSF','WSH','ISO','IMG','VHD','VHDX') 'MultiString'
 
 $script:RuleCount = 0
 function Add-SrpRule([int]$Level, [string]$Path, [string]$Desc) {
@@ -197,6 +197,14 @@ function Add-SrpRule([int]$Level, [string]$Path, [string]$Desc) {
     $script:RuleCount++
 }
 $DISALLOWED = 0
+$UNRESTRICTED = 262144
+
+# PowerShell checks for lockdown by test-running a tiny script in %TEMP%. If SRP blocks it,
+# EVERY PowerShell window (even admin) drops into Constrained Language Mode and admin
+# tools break. Always allow those test files. (.ps1 is also left out of the blocked
+# file types above - PowerShell scripts don't run on double-click anyway.)
+Add-SrpRule $UNRESTRICTED '%USERPROFILE%\AppData\Local\Temp\__PSScriptPolicyTest_*' 'UGC: allow PowerShell language-mode test'
+Add-SrpRule $UNRESTRICTED '%SystemRoot%\Temp\__PSScriptPolicyTest_*' 'UGC: allow PowerShell language-mode test (SYSTEM)'
 
 # Whole folders: nothing executable may run from here (WhatsApp/browser downloads, ZIP extraction temp, Outlook temp)
 foreach ($f in @(
@@ -219,7 +227,7 @@ Add-SrpRule $DISALLOWED '%USERPROFILE%\AppData\Roaming\WhatsApp' 'UGC: block exe
 $extFolders = '%USERPROFILE%\Desktop','%USERPROFILE%\Documents',
               '%OneDriveCommercial%\Desktop','%OneDriveCommercial%\Documents',
               '%OneDrive%\Desktop','%OneDrive%\Documents'
-$riskyExt   = 'exe','com','scr','pif','bat','cmd','js','jse','vbs','vbe','wsf','hta','msi','ps1','cpl','iso','img','vhd'
+$riskyExt   = 'exe','com','scr','pif','bat','cmd','js','jse','vbs','vbe','wsf','hta','msi','cpl','iso','img','vhd'
 foreach ($f in $extFolders) { foreach ($e in $riskyExt) {
     Add-SrpRule $DISALLOWED "$f\*.$e" "UGC: block .$e on Desktop/Documents"
 } }
