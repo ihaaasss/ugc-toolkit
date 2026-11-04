@@ -11,6 +11,8 @@
       4. Running processes outside Windows/Program Files, unsigned, or with suspicious command lines
       5. Network connections owned by those processes
       6. Defender status and recent detections, local administrators
+      7. Remote-access / screen-sharing tools (AnyDesk, ScreenConnect, NetSupport, RustDesk ...)
+      8. Which programs used the webcam, microphone or screen capture, and when
 
 .USAGE (as Administrator)
     powershell -ExecutionPolicy Bypass -File .\UGC-Infection-Check.ps1            # last 14 days
@@ -192,6 +194,54 @@ W '  Local Administrators:'
 Get-LocalGroupMember -SID 'S-1-5-32-544' | ForEach-Object { W "     $($_.Name)  ($($_.ObjectClass))" }
 foreach ($lu in Get-LocalUser | Where-Object { $_.Enabled }) {
     if ($lu.PasswordLastSet -and $lu.PasswordLastSet -ge $Since) { W "  ?  Local user '$($lu.Name)' password set $($lu.PasswordLastSet) (new account?)" }
+}
+
+# ------------------------------------------------------------------ 7. remote access tools
+Head '7. REMOTE-ACCESS / SCREEN-SHARING TOOLS (often installed silently by attackers)'
+$rat = 'anydesk|teamviewer|screenconnect|connectwise|rustdesk|netsupport|client32|atera|splashtop|ultraviewer|ultravnc|tightvnc|realvnc|winvnc|' +
+       'ammyy|supremo|radmin|logmein|simplehelp|meshagent|tacticalrmm|remoteutilities|rutserv|rfusclient|zohoassist|getscreen|dwagent|aeroadmin|hoptodesk|parsec'
+$ratHits = @()
+foreach ($pr in Get-CimInstance Win32_Process | Where-Object { "$($_.Name) $($_.ExecutablePath)" -match $rat }) {
+    $ratHits += "RUNNING  $($pr.Name)  (PID $($pr.ProcessId))  $($pr.ExecutablePath)   [$(Get-SigStatus $pr.ExecutablePath)]"
+}
+foreach ($s in Get-CimInstance Win32_Service | Where-Object { "$($_.Name) $($_.DisplayName) $($_.PathName)" -match $rat }) {
+    $ratHits += "SERVICE  $($s.DisplayName) [$($s.State)/$($s.StartMode)]  $($s.PathName)"
+}
+$uninst = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+foreach ($sid in Get-ChildItem 'Registry::HKEY_USERS' | Where-Object { $_.PSChildName -match '^S-1-5-21-[\d-]+$' }) {
+    $uninst += "Registry::HKEY_USERS\$($sid.PSChildName)\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
+}
+foreach ($app in Get-ItemProperty $uninst | Where-Object { $_.DisplayName -match $rat }) {
+    $ratHits += "INSTALLED  $($app.DisplayName) $($app.DisplayVersion)  (install date: $($app.InstallDate))"
+}
+foreach ($u in Get-ChildItem 'C:\Users' -Directory -Force) {
+    foreach ($f in Get-ChildItem (Join-Path $u.FullName 'Downloads'),(Join-Path $u.FullName 'AppData') -Recurse -File -Force -Include *.exe |
+                   Where-Object { $_.Name -match $rat }) {
+        $ratHits += "FILE  $($f.FullName)  ($($f.LastWriteTime.ToString('yyyy-MM-dd HH:mm')))"
+    }
+}
+if ($ratHits) {
+    foreach ($h in $ratHits | Sort-Object -Unique) { Flag "$h" }
+    W '     -> If IT did not install these, remove them and treat the PC as compromised.'
+} else { W '  (none found)' }
+
+# ------------------------------------------------------------------ 8. webcam / microphone / screen use
+Head '8. PROGRAMS THAT USED THE WEBCAM / MICROPHONE / SCREEN CAPTURE (Windows privacy log)'
+W '  Windows records the last time each desktop program used these. Anything you do not recognise = !!'
+$known = '\\(Microsoft|Windows|Program Files|Program Files \(x86\))\\|teams|zoom|webex|skype|chrome|msedge|firefox|whatsapp|obs'
+foreach ($sid in Get-ChildItem 'Registry::HKEY_USERS' | Where-Object { $_.PSChildName -match '^S-1-5-21-[\d-]+$' }) {
+    $user = try { (New-Object Security.Principal.SecurityIdentifier $sid.PSChildName).Translate([Security.Principal.NTAccount]).Value } catch { $sid.PSChildName }
+    foreach ($cap in 'webcam','microphone','graphicsCaptureProgrammatic','graphicsCaptureWithoutBorder') {
+        $base = "Registry::HKEY_USERS\$($sid.PSChildName)\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\$cap\NonPackaged"
+        foreach ($k in Get-ChildItem $base) {
+            $v = Get-ItemProperty $k.PSPath
+            if (-not $v.LastUsedTimeStart) { continue }
+            $when = [datetime]::FromFileTime([int64]$v.LastUsedTimeStart)
+            $app  = $k.PSChildName -replace '#', '\'
+            $line = '{0,-12} last used {1:yyyy-MM-dd HH:mm}  by  {2}   ({3})' -f $cap, $when, $app, $user
+            if ($app -match $UserWritable -or ($app -notmatch $known -and $when -ge $Since)) { Flag $line } else { W "     $line" }
+        }
+    }
 }
 
 # ------------------------------------------------------------------ summary
